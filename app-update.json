@@ -1,9 +1,10 @@
 {
   "schema": 1,
-  "enabled": true,
+  "enabled": false,
   "versionCode": 36,
   "versionName": "3.4",
   "url": "https://raw.githubusercontent.com/xinminyu168-spec/starling-3d-studio/main/updates/starling-v36.apk",
   "sha256": "f66678b5792af00a0ca42c3dc1afbed3d60f817e04890b4682b3f8808fe9f5b4",
-  "size": 10224994
+  "size": 10224994,
+  "note": "V3.4 paused: device report of black materials; fixing before publishing next version."
 }
