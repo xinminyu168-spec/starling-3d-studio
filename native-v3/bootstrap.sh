@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 55
-  versionName '5.3'
+  versionCode 56
+  versionName '5.4'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -534,7 +534,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V5.3").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V5.4").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -543,6 +543,9 @@ class MainActivity : Activity() {
    }
    override fun onPageFinished(view:android.webkit.WebView,url:String){if(initialized)js("window.studioReady&&studioReady()")}
   }
+  prepareStartupAssets()
+ }
+ private fun prepareStartupAssets(){
   Thread{
    try{StudioAssets.prepare(this);runOnUiThread{
     if(!isDestroyed){
@@ -562,8 +565,14 @@ class MainActivity : Activity() {
      loadMode(selected)
      if(active){appUpdates.start();if(!pausedResources)sync()}
     }
-   }}catch(e:Exception){runOnUiThread{if(!isDestroyed)android.app.AlertDialog.Builder(this).setMessage("本地素材准备失败："+e.message).setPositiveButton("确定",null).show()}}
+   }}catch(e:Exception){runOnUiThread{if(!isDestroyed)showAssetRecovery(e.message?:"未知错误")}}
   }.start()
+ }
+ private fun showAssetRecovery(reason:String){
+  android.app.AlertDialog.Builder(this).setTitle("恢复原模型素材")
+   .setMessage("本地资源尚未准备完成："+reason+"\n请选择从旧版备份转换的 Starling-assets.zip。七项资源全部通过 SHA-256 校验后才会恢复。")
+   .setPositiveButton("选择素材备份"){_,_->startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"),81)}
+   .setNegativeButton("退出"){_,_->finish()}.setCancelable(false).show()
  }
  private fun applyTransform(){
   val asset=viewer.asset?:return
@@ -1258,6 +1267,18 @@ class MainActivity : Activity() {
  }
  override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
   super.onActivityResult(requestCode,resultCode,data)
+  if(requestCode==81){
+   val uri=data?.data
+   if(resultCode!=RESULT_OK||uri==null){showAssetRecovery("未选择备份");return}
+   val progress=android.app.ProgressDialog(this).apply{setTitle("恢复模型");setMessage("正在读取并校验七项原始素材");setCancelable(false);show()}
+   Thread{
+    try{
+     contentResolver.openInputStream(uri)!!.use{StudioAssets.importBackup(this,it)}
+     runOnUiThread{if(!isDestroyed){progress.dismiss();prepareStartupAssets()}}
+    }catch(e:Exception){runOnUiThread{if(!isDestroyed){progress.dismiss();showAssetRecovery(e.message?:"备份校验失败")}}}
+   }.start()
+   return
+  }
   if(requestCode!=7||resultCode!=RESULT_OK) return
   val uri=data?.data?:return
   status.text="正在读取模型…"
@@ -1442,6 +1463,43 @@ object StudioAssets {
     require(tmp.renameTo(dst))
    }finally{tmp.delete()}
   }
+ }
+ // Restore only the immutable, hash-pinned assets, never arbitrary files or preferences.
+ @Synchronized fun importBackup(c:Context,input:java.io.InputStream){
+  val dir=directory(c)
+  val staged=File(c.filesDir,"studio-assets-import")
+  val old=File(c.filesDir,"studio-assets-previous")
+  // Recover a previous interrupted rename; do not overwrite any preexisting backup.
+  if(!dir.exists()&&old.exists())require(old.renameTo(dir)){"上次恢复未完成"}
+  require(!old.exists()){"存在旧素材保护副本，请先保留并检查"}
+  require(staged.deleteRecursively()&&staged.mkdirs()){"无法准备恢复目录"}
+  require(staged.usableSpace>expected.values.sumOf{it.first}+10_000_000L){"可用空间不足"}
+  try{
+   val seen=mutableSetOf<String>()
+   java.util.zip.ZipInputStream(java.io.BufferedInputStream(input)).use{zip->
+    while(true){
+     val entry=zip.nextEntry?:break
+     val name=entry.name
+     val spec=expected[name]?:error("不允许的备份条目："+name)
+     require(!entry.isDirectory&&seen.add(name)){"重复或无效素材："+name}
+     val md=MessageDigest.getInstance("SHA-256")
+     File(staged,name).outputStream().use{out->
+      val buf=ByteArray(65536);var total=0L
+      while(true){val n=zip.read(buf);if(n<0)break;total+=n;require(total<=spec.first){"素材大小超限："+name};md.update(buf,0,n);out.write(buf,0,n)}
+      require(total==spec.first){"素材长度不一致："+name}
+     }
+     require(md.digest().joinToString(""){"%02x".format(it)}==spec.second){"素材哈希不一致："+name}
+     zip.closeEntry()
+    }
+   }
+   require(seen==expected.keys){"缺少必需素材"}
+   if(dir.exists())require(dir.renameTo(old)){"无法保护旧素材"}
+   if(!staged.renameTo(dir)){
+    if(old.exists())old.renameTo(dir)
+    error("无法提交已校验素材")
+   }
+   if(old.exists())old.deleteRecursively()
+  }finally{staged.deleteRecursively()}
  }
  fun file(c:Context,name:String):File{
   val spec=expected[name]?:error("未知资源")
