@@ -10,7 +10,7 @@ assert a[cd-16:cd]==b"APK Sig Block 42"
 n=struct.unpack_from("<Q",a,cd-24)[0]
 start=cd-n-8
 assert start>=0 and struct.unpack_from("<Q",a,start)[0]==n
-block=base64.b64decode(m["signingBlock"],validate=True)
+block=__import__("zlib").decompress(base64.b64decode(m["signingBlockZ"],validate=True)) if "signingBlockZ" in m else base64.b64decode(m["signingBlock"],validate=True)
 assert len(block)<65536 and block[-16:]==b"APK Sig Block 42"
 pad=int(m.get("padding",0));assert 0<=pad<4096
 end=bytearray(a[e:]);struct.pack_into("<I",end,16,start+pad+len(block))
