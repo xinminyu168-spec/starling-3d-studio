@@ -1,0 +1,38 @@
+name: Starling native Android
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'native-v3/**'
+      - '.github/workflows/starling-native.yml'
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - uses: android-actions/setup-android@v3
+      - name: Android SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Generate project
+        run: bash native-v3/bootstrap.sh
+      - name: Compile native APK
+        run: gradle -p native-v3 :app:assembleDebug --no-daemon --stacktrace
+      - name: Verify APK signature
+        run: '"$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose native-v3/app/build/outputs/apk/debug/app-debug.apk'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Starling-Filament-3.0-alpha
+          path: native-v3/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
