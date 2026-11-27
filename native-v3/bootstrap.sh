@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 62
-  versionName '6.0'
+  versionCode 63
+  versionName '6.1'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -107,6 +107,8 @@ class MainActivity : Activity() {
  private var eyePreparing=false
  private var eyeActive=false
  private var irisBoundSlots=0
+ private var irisStrength=1f
+ private val irisMaterials=mutableListOf<MaterialInstance>()
  private var irisLastResult="尚未启用"
  private var lightProfile=0
  private var advancedMask=0
@@ -135,7 +137,7 @@ class MainActivity : Activity() {
  private val skinBindings=mutableListOf<SkinBinding>()
  private data class Atlas(val parameter:String,val image:ByteArray,val srgb:Boolean)
  private var pendingAtlas=listOf<Atlas>()
- private fun clearExplicit(){irisBoundSlots=0;uvProbeBindings.clear();uvProbeInstance?.let{viewer.engine.destroyMaterialInstance(it)};uvProbeInstance=null;shellBindings.clear();shellInstance?.let{viewer.engine.destroyMaterialInstance(it)};shellInstance=null;clothBindings.clear();clothInstance?.let{viewer.engine.destroyMaterialInstance(it)};clothInstance=null;hairBindings.clear();hairInstance?.let{viewer.engine.destroyMaterialInstance(it)};hairInstance=null;skinMaterials.clear();skinBindings.clear();sssInstance?.let{viewer.engine.destroyMaterialInstance(it)};sssInstance=null;boundAtlas.clear();for(t in explicitTextures)viewer.engine.destroyTexture(t);explicitTextures.clear();pendingAtlas=emptyList()}
+ private fun clearExplicit(){irisBoundSlots=0;irisMaterials.clear();irisStrength=1f;uvProbeBindings.clear();uvProbeInstance?.let{viewer.engine.destroyMaterialInstance(it)};uvProbeInstance=null;shellBindings.clear();shellInstance?.let{viewer.engine.destroyMaterialInstance(it)};shellInstance=null;clothBindings.clear();clothInstance?.let{viewer.engine.destroyMaterialInstance(it)};clothInstance=null;hairBindings.clear();hairInstance?.let{viewer.engine.destroyMaterialInstance(it)};hairInstance=null;skinMaterials.clear();skinBindings.clear();sssInstance?.let{viewer.engine.destroyMaterialInstance(it)};sssInstance=null;boundAtlas.clear();for(t in explicitTextures)viewer.engine.destroyTexture(t);explicitTextures.clear();pendingAtlas=emptyList()}
  // The shared atlas has no semantic material ID. Only refine conservative
  // colour/roughness candidates; do not relabel arbitrary regions as skin/cloth.
  private fun decodedAtlas(a:Atlas,mutable:Boolean=false):android.graphics.Bitmap{
@@ -211,14 +213,40 @@ class MainActivity : Activity() {
   require(iris.map{it.name}.toSet()==names){"虹膜候选材质未完整绑定"}
   val params=listOf("metallicFactor","roughnessFactor","normalScale")
   require(iris.all{mi->params.all{mi.material.hasParameter(it)}}){"虹膜 PBR 参数不兼容"}
-  for(mi in iris){
-   mi.setParameter("metallicFactor",0f)
-   mi.setParameter("roughnessFactor",.65f)
-   mi.setParameter("normalScale",.20f)
-  }
+  irisMaterials.clear();irisMaterials.addAll(iris)
   irisBoundSlots=iris.size
+  irisStrength=1f
+  applyIrisStrength()
   irisLastResult="已绑定 2 个候选材质 / "+irisBoundSlots+" 个图元实例"
-  return "虹膜 PBR："+irisLastResult+"；金属度倍率 0，粗糙度倍率 0.65，法线强度 0.20"
+  return "虹膜 PBR："+irisLastResult+"；支持同网格 A/B 对照"
+ }
+ private fun applyIrisStrength(){
+  val t=irisStrength.coerceIn(0f,1f)
+  val soft=skinSoftness.coerceIn(0f,1f)
+  for(mi in irisMaterials){
+   val skin=mi.name=="Iris_candidate_Skin_candidate"
+   // Match original General and runtime-refined Skin PBR at strength zero.
+   val baselineRough=if(skin)1f-.08f*(1f-soft) else 1f
+   val baselineNormal=if(skin).55f-.32f*soft else .55f
+   mi.setParameter("metallicFactor",1f-t)
+   mi.setParameter("roughnessFactor",baselineRough+(.65f-baselineRough)*t)
+   mi.setParameter("normalScale",baselineNormal+(.20f-baselineNormal)*t)
+  }
+  js("window.studioIrisStrength&&studioIrisStrength("+t+")")
+ }
+ private fun chooseIrisStrength(){
+  if(loading||eyePreparing||exportBusy||!eyeActive||irisMaterials.isEmpty()){
+   Toast.makeText(this,"请先开启虹膜反射试验并完成加载",Toast.LENGTH_SHORT).show();return
+  }
+  val labels=arrayOf("A · 原 PBR 参数（0%）","B · 柔和反射（50%）","C · 完整试验（100%）")
+  val values=floatArrayOf(0f,.5f,1f)
+  android.app.AlertDialog.Builder(this).setTitle("虹膜反射 · 同网格对照")
+   .setSingleChoiceItems(labels,if(irisStrength==0f)0 else if(irisStrength==.5f)1 else 2){dialog,i->
+    dialog.dismiss()
+    if(loading||eyePreparing||exportBusy||!eyeActive||irisMaterials.isEmpty())return@setSingleChoiceItems
+    irisStrength=values[i];applyIrisStrength()
+    status.text=labels[i]+" · 相机与光照不变"
+   }.setNegativeButton("关闭",null).show()
  }
  // The actual glTF instance labels are supplied by AssetLoader; unknown names
  // always retain the original glTF values. No whole-model metal or color override.
@@ -253,6 +281,7 @@ class MainActivity : Activity() {
   if(!regionModel||diagnostic)return
   val t=skinSoftness.coerceIn(0f,1f)
   sssInstance?.setParameter("softness",t)
+  if(eyeActive&&irisMaterials.isNotEmpty())applyIrisStrength()
   for(mi in skinMaterials){
    if(mi.material.hasParameter("normalScale"))mi.setParameter("normalScale",.55f-.32f*t)
    if(mi.material.hasParameter("roughnessFactor"))mi.setParameter("roughnessFactor",1f-.08f*(1f-t))
@@ -557,7 +586,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V6.0").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V6.1").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -636,7 +665,7 @@ class MainActivity : Activity() {
     try{
      val j=JSONObject(data)
      when(command){
-      "ready"->{js("window.studioIris&&studioIris("+(eyeActive&&!loading)+")");js("window.studioPores&&studioPores("+poreStrength+")");js("window.studioSkin&&studioSkin("+skinSoftness+")");js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")}
+      "ready"->{js("window.studioIris&&studioIris("+(eyeActive&&!loading)+");window.studioIrisStrength&&studioIrisStrength("+irisStrength+")");js("window.studioPores&&studioPores("+poreStrength+")");js("window.studioSkin&&studioSkin("+skinSoftness+")");js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")}
       "pose"->{yaw=j.optDouble("yaw",0.0).toFloat();pitch=j.optDouble("pitch",0.0).toFloat().coerceIn(-85f,85f);zoom=j.optDouble("zoom",1.0).toFloat().coerceIn(.3f,2.5f);panX=j.optDouble("x",0.0).toFloat().coerceIn(-1.5f,1.5f);panY=j.optDouble("y",0.0).toFloat().coerceIn(-1.5f,1.5f);spinning=j.optBoolean("spin",false);applyTransform()}
       "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&(m!=selected||viewer.asset==null)){diagnostic=false;selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
       "diagnose"->{
@@ -679,6 +708,7 @@ class MainActivity : Activity() {
       "maximum"->maximumPreset()
       "portrait"->portraitPreset()
       "irisTest"->toggleIrisTest()
+      "irisStrength"->chooseIrisStrength()
       "lightProfile"->chooseLightProfile()
       "materialCompare"->compareMaterials()
       "safeMaterials"->restoreSafeMaterials()
@@ -951,14 +981,14 @@ class MainActivity : Activity() {
    "模型："+selected+"；独立分区："+regionModel+"\n"+
    "高级材质："+n+"/4；动态分辨率：关闭\n"+
    "最近 UV 检测："+uvResult+"\n"+
-   "虹膜试验："+(if(eyePreparing)"准备中" else if(eyeActive&&loading)"加载中" else if(eyeActive&&irisBoundSlots>0)"已绑定" else "关闭")+"；最近结果："+irisLastResult+"\n"+
+   "虹膜试验："+(if(eyePreparing)"准备中" else if(eyeActive&&loading)"加载中" else if(eyeActive&&irisBoundSlots>0)"已绑定" else "关闭")+"；强度："+(irisStrength*100).toInt()+"%；最近结果："+irisLastResult+"\n"+
    "四套高级材质已统一 glTF UV 方向（flipUV=false），需逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
-  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V6.0").setMessage(report)
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V6.1").setMessage(report)
    .setNegativeButton("关闭",null).setPositiveButton("复制报告"){_,_->
     val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V6.0",report))
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V6.1",report))
     Toast.makeText(this,"诊断报告已复制",Toast.LENGTH_SHORT).show()
    }.show()
  }
@@ -1713,7 +1743,9 @@ window.studioPores=v=>{poreRange.value=v;poreValue.textContent=Number(v).toFixed
 const maxButton=document.createElement('button');maxButton.textContent='最高画质 · 安全 PBR';maxButton.style.margin='4px';maxButton.onclick=()=>send('maximum');$('check').insertAdjacentElement('afterend',maxButton);
 window.studioMaximum=()=>{if(window.studioLightProfile)studioLightProfile(0);studioLook(true);studioRefine(true);studioModel('full');$('quality').value='2';studioDefaults();send('quality',{value:2})};
 const irisButton=document.createElement('button');irisButton.textContent='虹膜反射 · 试验关闭';irisButton.style.margin='4px';irisButton.onclick=()=>send('irisTest');$('check').insertAdjacentElement('afterend',irisButton);
-window.studioIris=on=>{irisButton.textContent='虹膜反射 · '+(on?'试验开启':'试验关闭')};
+const irisStrengthButton=document.createElement('button');irisStrengthButton.textContent='虹膜 A/B 对照';irisStrengthButton.style.margin='4px';irisStrengthButton.disabled=true;irisStrengthButton.onclick=()=>send('irisStrength');irisButton.insertAdjacentElement('afterend',irisStrengthButton);
+window.studioIris=on=>{irisButton.textContent='虹膜反射 · '+(on?'试验开启':'试验关闭');irisStrengthButton.disabled=!on};
+window.studioIrisStrength=t=>{irisStrengthButton.textContent='虹膜 A/B · '+Math.round(t*100)+'%'};
 const portraitButton=document.createElement('button');portraitButton.textContent='肖像精修 · 单项对照';portraitButton.style.margin='4px';portraitButton.onclick=()=>send('portrait');$('check').insertAdjacentElement('afterend',portraitButton);
 const lightingButton=document.createElement('button');lightingButton.textContent='灯光校准 · 标准三点布光';lightingButton.style.margin='4px';lightingButton.onclick=()=>send('lightProfile');$('check').insertAdjacentElement('afterend',lightingButton);
 window.studioLightProfile=i=>{lightingButton.textContent='灯光校准 · '+['标准三点布光','柔和棚拍','轮廓造型','角色肖像'][i]};
