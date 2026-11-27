@@ -1,0 +1,74 @@
+name: Publish new-certificate program update
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['updates/publish-v2.json']
+permissions:
+  contents: write
+  actions: read
+  statuses: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Report started
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=pending -f context=starling/publish-v2 -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Read signed release metadata
+        id: meta
+        run: |
+          echo "run_id=$(jq -er '.runId | numbers' updates/publish-v2.json)" >> "$GITHUB_OUTPUT"
+          echo "version=$(jq -er '.versionCode | numbers' updates/publish-v2.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          name: Starling-Filament-3.0-alpha
+          run-id: ${{ steps.meta.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: /tmp/starling
+      - name: Apply offline signature and verify
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          python updates/publish-v2.py /tmp/starling/app-debug.apk
+          sdk="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          signer="$sdk/build-tools/35.0.0/apksigner"
+          aapt="$sdk/build-tools/35.0.0/aapt"
+          apk="updates/starling-new-v$VERSION.apk"
+          "$signer" verify --verbose --print-certs "$apk" | tee /tmp/cert.txt
+          grep -F 'Signer #1 certificate SHA-256 digest: 065d80ddf51e5a7cbc881900351ee355cdd8aa2447fee0a959d0391ecc02c7ba' /tmp/cert.txt
+          "$sdk/build-tools/35.0.0/zipalign" -c -P 16 4 "$apk"
+          "$aapt" dump badging "$apk" | head -n 1 | grep -F "package: name='com.xs.character.viewer' versionCode='$VERSION'"
+      - name: Publish only verified program APK
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "updates/starling-new-v$VERSION.apk" app-update-v2.json
+          git commit -m "Publish signed program update $VERSION"
+          for attempt in 1 2 3; do
+            git fetch origin main
+            remote_version=$(git show origin/main:app-update-v2.json | jq -er '.versionCode | numbers')
+            if [ "$remote_version" -ge "$VERSION" ]; then
+              echo "Remote manifest already has this version or newer; refusing overwrite"
+              exit 1
+            fi
+            git rebase origin/main
+            if git push origin HEAD:main; then exit 0; fi
+          done
+          exit 1
+      - name: Report result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          state=failure
+          if [ "$JOB_STATUS" = success ]; then state=success; fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state="$state" -f context=starling/publish-v2 -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
