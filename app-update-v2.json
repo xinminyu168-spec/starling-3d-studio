@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "enabled": false,
+  "versionCode": 56,
+  "versionName": "5.4",
+  "certificateSha256": "065d80ddf51e5a7cbc881900351ee355cdd8aa2447fee0a959d0391ecc02c7ba",
+  "note": "新签名独立渠道；等待 V5.5 首次发布"
+}
