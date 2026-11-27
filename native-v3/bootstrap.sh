@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 38
-  versionName '3.6'
+  versionCode 39
+  versionName '3.7'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -93,12 +93,35 @@ class MainActivity : Activity() {
    if (!active) return
    if(spinning){yaw=(yaw+0.45f)%360f;applyTransform()}
    viewer.render(t)
+   loadProgress()
    if (t-lastCheck>30_000_000_000L) { lastCheck=t; if(initialized&&!pausedResources)sync() }
    frames.postFrameCallback(this)
   }
  }
  private lateinit var web:android.webkit.WebView
  private var initialized=false
+ private var loadBuffer:ByteBuffer?=null
+ private var loading=false
+ private var loadStart=0L
+ private var lastLoadPercent=-1
+ private var diagnostic=false
+ private var modelAudit=""
+ private fun loadProgress(){
+  if(!loading)return
+  val p=viewer.progress.coerceIn(0f,1f)
+  val percent=(p*100).toInt()
+  if(percent!=lastLoadPercent){lastLoadPercent=percent;js("window.studioProgress&&studioProgress("+percent+")")}
+  if(p>=.9999f){
+   loading=false;loadBuffer=null
+   status.text=if(diagnostic)"仅色彩图诊断 · 已加载" else "模型及纹理加载完成"
+   js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+")")
+  }else if(android.os.SystemClock.elapsedRealtime()-loadStart>60000L){
+   loading=false
+   viewer.destroyModel();loadBuffer=null
+   status.text="纹理加载超时，请切换轻量模型"
+   js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")")
+  }
+ }
  private var baseTransform:FloatArray?=null
  private var yaw=0f
  private var pitch=0f
@@ -178,7 +201,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V3.6").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V3.7").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -239,9 +262,16 @@ class MainActivity : Activity() {
     try{
      val j=JSONObject(data)
      when(command){
-      "ready"->{js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+")")}
+      "ready"->{js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+")")}
       "pose"->{yaw=j.optDouble("yaw",0.0).toFloat();pitch=j.optDouble("pitch",0.0).toFloat().coerceIn(-85f,85f);zoom=j.optDouble("zoom",1.0).toFloat().coerceIn(.3f,2.5f);panX=j.optDouble("x",0.0).toFloat().coerceIn(-1.5f,1.5f);panY=j.optDouble("y",0.0).toFloat().coerceIn(-1.5f,1.5f);spinning=j.optBoolean("spin",false);applyTransform()}
-      "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&m!=selected){selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
+      "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&(m!=selected||viewer.asset==null)){diagnostic=false;selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
+      "diagnose"->{
+       android.app.AlertDialog.Builder(this@MainActivity).setTitle("纹理加载诊断")
+        .setMessage("引擎：Filament 1.56.0\n"+modelAudit+"\n加载进度："+lastLoadPercent.coerceAtLeast(0)+"%\n仅色彩图诊断使用临时 2K 模型，绕过光照、金属度与法线，不修改原文件。")
+        .setNegativeButton("关闭",null).setPositiveButton(if(diagnostic)"恢复原模型" else "仅色彩图诊断"){_,_->
+         diagnostic=!diagnostic;loadMode(selected)
+        }.show()
+      }
       "quality"->{val q=j.optDouble("value",2.0);viewer.view.multiSampleAntiAliasingOptions=viewer.view.multiSampleAntiAliasingOptions.apply{enabled=q>1;sampleCount=if(q>=2)4 else 2};viewer.view.ambientOcclusion=com.google.android.filament.View.AmbientOcclusion.NONE}
       "params"->applyUiParams(j)
       "save"->{prefs.edit().putString("params",data).apply();status.text="渲染参数已保存"}
@@ -258,7 +288,7 @@ class MainActivity : Activity() {
   val f=File(filesDir,"model-"+mode+".glb")
   // Recovery uses only the verified bundled source; no cached overrides.
   
-  loadAsset(if(mode=="full")"full.glb" else "mobile.glb")
+  loadAsset(if(diagnostic||mode=="mobile")"mobile.glb" else "full.glb")
  }
  private fun loadAsset(name:String) {
   try {
@@ -283,8 +313,54 @@ class MainActivity : Activity() {
    val b=ByteBuffer.allocateDirect(n.toInt()).order(ByteOrder.LITTLE_ENDIAN)
    f.inputStream().channel.use { ch -> while(b.hasRemaining()) { if(ch.read(b)<0) error("文件不完整") } }
    b.flip(); require(b.getInt(0)==0x46546c67); require(b.getInt(4)==2); require(b.getInt(8)==n.toInt())
-   viewer.loadModelGlb(b); require(viewer.asset!=null){"Filament 无法解析模型"}; viewer.transformToUnitCube(); val tm=viewer.engine.transformManager; baseTransform=tm.getTransform(tm.getInstance(viewer.asset!!.root),FloatArray(16)); applyTransform();status.text="模型已载入";js("studioLoaded("+JSONObject.quote(selected)+")");return true
-  } catch(e:Exception) { status.text="加载失败："+e.message; return false }
+   val jsonSize=b.getInt(12);require(jsonSize in 2..4_000_000&&jsonSize%4==0&&20+jsonSize+8<=b.limit());require(b.getInt(16)==0x4e4f534a)
+   val jsonBytes=ByteArray(jsonSize);b.position(20);b.get(jsonBytes)
+   val doc=JSONObject(String(jsonBytes,Charsets.UTF_8).trim())
+   val materials=doc.optJSONArray("materials")?:error("缺少材质")
+   val images=doc.optJSONArray("images")?:error("缺少纹理")
+   val textures=doc.optJSONArray("textures")?:error("缺少纹理绑定")
+   var bindings=0
+   for(i in 0 until materials.length()){
+    val mat=materials.getJSONObject(i)
+    val p=mat.optJSONObject("pbrMetallicRoughness")?:continue
+    val index=p.optJSONObject("baseColorTexture")?.optInt("index",-1)?:-1
+    if(index>=0){require(index<textures.length());val source=textures.getJSONObject(index).getInt("source");require(source in 0 until images.length());bindings++}
+   }
+   require(bindings>0){"未找到有效色彩图绑定"}
+   modelAudit="文件："+f.name+"\n材质："+materials.length()+" · 图像："+images.length()+" · 色彩图绑定："+bindings
+   b.rewind()
+   val input=if(diagnostic)diagnosticGlb(b,doc,jsonSize) else b
+   viewer.destroyModel()
+   loadBuffer=input
+   loading=true;loadStart=android.os.SystemClock.elapsedRealtime();lastLoadPercent=-1
+   viewer.loadModelGlb(input);require(viewer.asset!=null){"Filament 无法解析模型"}
+   viewer.transformToUnitCube()
+   val tm=viewer.engine.transformManager
+   baseTransform=tm.getTransform(tm.getInstance(viewer.asset!!.root),FloatArray(16))
+   applyTransform();status.text="正在加载模型纹理";js("window.studioProgress&&studioProgress(0)");return true
+  } catch(e:Exception) { loading=false;viewer.destroyModel();loadBuffer=null;status.text="加载失败："+e.message;js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")");return false }
+ }
+ // Temporary diagnostic copy only. The normal rendering path never changes GLB bytes.
+ private fun diagnosticGlb(source:ByteBuffer,doc:JSONObject,jsonSize:Int):ByteBuffer{
+  val materials=doc.getJSONArray("materials")
+  for(i in 0 until materials.length()){
+   val m=materials.getJSONObject(i)
+   val original=m.getJSONObject("pbrMetallicRoughness")
+   val p=JSONObject().put("baseColorFactor",org.json.JSONArray("[1,1,1,1]"))
+   p.put("baseColorTexture",original.getJSONObject("baseColorTexture"))
+   m.put("pbrMetallicRoughness",p)
+   m.remove("normalTexture");m.remove("occlusionTexture");m.remove("emissiveTexture");m.remove("emissiveFactor")
+   m.put("extensions",JSONObject().put("KHR_materials_unlit",JSONObject()))
+  }
+  val used=doc.optJSONArray("extensionsUsed")?:org.json.JSONArray().also{doc.put("extensionsUsed",it)}
+  if((0 until used.length()).none{used.optString(it)=="KHR_materials_unlit"})used.put("KHR_materials_unlit")
+  val json=doc.toString().toByteArray(Charsets.UTF_8)
+  val padded=(json.size+3)/4*4
+  source.position(20+jsonSize)
+  val out=ByteBuffer.allocateDirect(20+padded+source.remaining()).order(ByteOrder.LITTLE_ENDIAN)
+  out.putInt(0x46546c67);out.putInt(2);out.putInt(out.capacity());out.putInt(padded);out.putInt(0x4e4f534a)
+  out.put(json);repeat(padded-json.size){out.put(32.toByte())};out.put(source);out.flip()
+  return out
  }
  override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
   super.onActivityResult(requestCode,resultCode,data)
@@ -515,7 +591,11 @@ window.studioLoaded=m=>{studioModel(m);$('msg').style.display='none';$('modelinf
 function change(m){studioModel(m);$('msg').style.display='block';$('msg').textContent='正在加载模型…';send('model',{mode:m})}
 $('model').onchange=()=>change($('model').value);$('switchModel').onclick=()=>change($('model').value==='full'?'mobile':'full');
 $('endpoint').value='https://xinminyu168-spec.github.io/starling-3d-studio/';$('endpoint').readOnly=true;$('check').onclick=()=>send('check');$('rollback').onclick=()=>send('rollback');
-window.studioReady=()=>{send('ready');studioDefaults();send('quality',{value:2})};studioReady();$('msg').style.display='none';
+window.studioProgress=p=>{$('msg').style.display='block';$('msg').textContent='正在加载纹理 '+p+'%';$('modelinfo').textContent='纹理加载 '+p+'%'};
+window.studioFailure=s=>{$('msg').style.display='block';$('msg').textContent=s;$('modelinfo').textContent='加载失败'};
+window.studioDiagnostic=on=>{if(on)$('modelinfo').textContent='仅色彩图诊断 · 2K'};
+const diag=document.createElement('button');diag.textContent='纹理诊断';diag.style.margin='4px';diag.onclick=()=>send('diagnose');$('check').insertAdjacentElement('afterend',diag);
+window.studioReady=()=>{send('ready');studioDefaults();send('quality',{value:2})};studioReady();
 EOF
 
 # Build the same prefiltered environment format used by Filament's Android samples.
