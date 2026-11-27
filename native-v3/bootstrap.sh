@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 45
-  versionName '4.3'
+  versionCode 46
+  versionName '4.4'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -109,12 +109,15 @@ class MainActivity : Activity() {
  private val explicitTextures=mutableListOf<Texture>()
  private val boundAtlas=mutableMapOf<String,Texture>()
  private var skinShader:Material?=null
+ private var hairShader:Material?=null
+ private var hairInstance:MaterialInstance?=null
+ private val hairBindings=mutableListOf<SkinBinding>()
  private var sssInstance:MaterialInstance?=null
  private data class SkinBinding(val entity:Int,val primitive:Int,val original:MaterialInstance)
  private val skinBindings=mutableListOf<SkinBinding>()
  private data class Atlas(val parameter:String,val image:ByteArray,val srgb:Boolean)
  private var pendingAtlas=listOf<Atlas>()
- private fun clearExplicit(){skinMaterials.clear();skinBindings.clear();sssInstance?.let{viewer.engine.destroyMaterialInstance(it)};sssInstance=null;boundAtlas.clear();for(t in explicitTextures)viewer.engine.destroyTexture(t);explicitTextures.clear();pendingAtlas=emptyList()}
+ private fun clearExplicit(){hairBindings.clear();hairInstance?.let{viewer.engine.destroyMaterialInstance(it)};hairInstance=null;skinMaterials.clear();skinBindings.clear();sssInstance?.let{viewer.engine.destroyMaterialInstance(it)};sssInstance=null;boundAtlas.clear();for(t in explicitTextures)viewer.engine.destroyTexture(t);explicitTextures.clear();pendingAtlas=emptyList()}
  // The shared atlas has no semantic material ID. Only refine conservative
  // colour/roughness candidates; do not relabel arbitrary regions as skin/cloth.
  private fun decodedAtlas(a:Atlas,mutable:Boolean=false):android.graphics.Bitmap{
@@ -264,6 +267,48 @@ class MainActivity : Activity() {
   for(binding in skinBindings){val ri=rm.getInstance(binding.entity);if(ri!=0)rm.setMaterialInstanceAt(ri,binding.primitive,binding.original)}
   skinBindings.clear();sssInstance?.let{viewer.engine.destroyMaterialInstance(it)};sssInstance=null
  }
+ private fun installHairShader():String{
+  if(!regionModel||diagnostic||loading)return "请先加载高精度分区模型"
+  if(hairInstance!=null)return "发束反射已开启"
+  val asset=viewer.asset?:return "无可用模型"
+  val rm=viewer.engine.renderableManager
+  var created:MaterialInstance?=null
+  try{
+   val material=hairShader?:run{
+    val bytes=resources.openRawResource(R.raw.studio_hair).use{it.readBytes()}
+    val buffer=ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder());buffer.put(bytes);buffer.flip()
+    Material.Builder().payload(buffer,bytes.size).build(viewer.engine).also{hairShader=it}
+   }
+   val eligible=mutableListOf<SkinBinding>()
+   for(entity in asset.entities){
+    val ri=rm.getInstance(entity);if(ri==0)continue
+    for(i in 0 until rm.getPrimitiveCount(ri)){
+     val old=rm.getMaterialInstanceAt(ri,i)
+     if(old.name!="Hair_candidate")continue
+     require(rm.getEnabledAttributesAt(ri,i).containsAll(material.requiredAttributes)){"发束顶点属性不兼容"}
+     eligible.add(SkinBinding(entity,i,old))
+    }
+   }
+   require(eligible.isNotEmpty()){"未找到头发候选分区"}
+   val mi=material.createInstance("Studio_hair_anisotropic");created=mi
+   val sampler=TextureSampler(TextureSampler.MinFilter.LINEAR_MIPMAP_LINEAR,TextureSampler.MagFilter.LINEAR,TextureSampler.WrapMode.REPEAT)
+   sampler.setAnisotropy(8f)
+   for(name in listOf("baseColorMap","normalMap","metallicRoughnessMap"))mi.setParameter(name,boundAtlas[name]?:error("缺少头发图集 "+name),sampler)
+   mi.setParameter("strength",0.55f)
+   for(binding in eligible){hairBindings.add(binding);rm.setMaterialInstanceAt(rm.getInstance(binding.entity),binding.primitive,mi)}
+   hairInstance=mi
+   return "独立各向异性着色器 · "+eligible.size+" 个图元"
+  }catch(e:Exception){
+   for(binding in hairBindings){val ri=rm.getInstance(binding.entity);if(ri!=0)rm.setMaterialInstanceAt(ri,binding.primitive,binding.original)}
+   hairBindings.clear();created?.let{viewer.engine.destroyMaterialInstance(it)};hairInstance=null
+   return "发束反射未启用，保留原 PBR："+e.message
+  }
+ }
+ private fun disableHairShader(){
+  val rm=viewer.engine.renderableManager
+  for(binding in hairBindings){val ri=rm.getInstance(binding.entity);if(ri!=0)rm.setMaterialInstanceAt(ri,binding.primitive,binding.original)}
+  hairBindings.clear();hairInstance?.let{viewer.engine.destroyMaterialInstance(it)};hairInstance=null
+ }
  private fun fallbackRegion(reason:String):Boolean{
   if(!regionModel)return false
   regionModel=false
@@ -283,7 +328,7 @@ class MainActivity : Activity() {
    }
    applyStudioLook()
    status.text=if(diagnostic)"仅色彩图诊断 · 已加载" else if(cinematic)"影视渲染 · 纹理绑定完成" else "保真渲染 · 纹理绑定完成"
-   js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+")")
+   js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+")")
   }else if(android.os.SystemClock.elapsedRealtime()-loadStart>60000L){
    loading=false
    viewer.destroyModel();clearExplicit();loadBuffer=null
@@ -388,7 +433,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V4.3").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V4.4").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -456,7 +501,7 @@ class MainActivity : Activity() {
     try{
      val j=JSONObject(data)
      when(command){
-      "ready"->{js("window.studioSkin&&studioSkin("+skinSoftness+")");js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+")")}
+      "ready"->{js("window.studioSkin&&studioSkin("+skinSoftness+")");js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+")")}
       "pose"->{yaw=j.optDouble("yaw",0.0).toFloat();pitch=j.optDouble("pitch",0.0).toFloat().coerceIn(-85f,85f);zoom=j.optDouble("zoom",1.0).toFloat().coerceIn(.3f,2.5f);panX=j.optDouble("x",0.0).toFloat().coerceIn(-1.5f,1.5f);panY=j.optDouble("y",0.0).toFloat().coerceIn(-1.5f,1.5f);spinning=j.optBoolean("spin",false);applyTransform()}
       "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&(m!=selected||viewer.asset==null)){diagnostic=false;selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
       "diagnose"->{
@@ -473,7 +518,13 @@ class MainActivity : Activity() {
        if(!loading&&regionModel&&!diagnostic){
         status.text=if(j.optBoolean("enabled",false))installSkinShader()else{disableSkinShader();"已恢复皮肤 PBR"}
        }
-       js("window.studioSSS&&studioSSS("+(sssInstance!=null)+")")
+       js("window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+")")
+      }
+      "hair"->{
+       if(!loading&&regionModel&&!diagnostic){
+        status.text=if(j.optBoolean("enabled",false))installHairShader()else{disableHairShader();"已恢复头发 PBR"}
+       }
+       js("window.studioHair&&studioHair("+(hairInstance!=null)+")")
       }
       "params"->applyUiParams(j)
       "save"->{prefs.edit().putString("params",data).putFloat("skinSoftness",skinSoftness).apply();status.text="渲染参数已保存"}
@@ -858,19 +909,20 @@ window.studioCloud=s=>{try{apply(JSON.parse(s));send('save',params())}catch(e){}
 window.studioRestore=s=>{try{let p=JSON.parse(s||"{}");apply(p)}catch(e){studioDefaults()}};
 window.studioStatus=s=>{$('status').textContent=s};
 window.studioModel=m=>{$('model').value=m;$('switchModel').textContent=m==='full'?'切换轻量版':'切换高精度'};
-window.studioLoaded=m=>{$('skin').disabled=true;sssButton.disabled=true;studioSSS(false);studioModel(m);$('msg').style.display='none';$('modelinfo').textContent=m==='full'?'离线高精度模型 · 4K':'离线轻量模型 · 2K'};
+window.studioLoaded=m=>{$('skin').disabled=true;sssButton.disabled=true;hairButton.disabled=true;studioSSS(false);studioHair(false);studioModel(m);$('msg').style.display='none';$('modelinfo').textContent=m==='full'?'离线高精度模型 · 4K':'离线轻量模型 · 2K'};
 function change(m){studioModel(m);$('msg').style.display='block';$('msg').textContent='正在加载模型…';send('model',{mode:m})}
 $('model').onchange=()=>change($('model').value);$('switchModel').onclick=()=>change($('model').value==='full'?'mobile':'full');
 $('endpoint').value='https://xinminyu168-spec.github.io/starling-3d-studio/';$('endpoint').readOnly=true;$('check').onclick=()=>send('check');$('rollback').onclick=()=>send('rollback');
 window.studioProgress=p=>{$('msg').style.display='block';$('msg').textContent='正在加载纹理 '+p+'%';$('modelinfo').textContent='纹理加载 '+p+'%'};
 window.studioFailure=s=>{$('msg').style.display='block';$('msg').textContent=s;$('modelinfo').textContent='加载失败'};
 window.studioDiagnostic=on=>{if(on)$('modelinfo').textContent='仅色彩图诊断 · 2K'};
-window.studioRegions=on=>{$('skin').disabled=!on;sssButton.disabled=!on;if(on)$('modelinfo').textContent='高精度 · 4K · 独立材质分区'};
+window.studioRegions=on=>{$('skin').disabled=!on;sssButton.disabled=!on;hairButton.disabled=!on;if(on)$('modelinfo').textContent='高精度 · 4K · 独立材质分区'};
 window.studioSkin=v=>{$('skin').value=v;$('skinV').value=Number(v).toFixed(2)};
 const look=document.createElement("button");look.textContent="影视级 / 保真";look.style.margin="4px";let cine=true;window.studioLook=on=>{cine=on;look.textContent=on?"影视级：开启（点击保真）":"保真：开启（点击影视级）"};look.onclick=()=>send("cinematic",{enabled:!cine});$("check").insertAdjacentElement("afterend",look);
 const polish=document.createElement("button");polish.style.margin="4px";let refine=true;window.studioRefine=on=>{refine=on;polish.textContent=on?"材质精修：开启":"材质精修：关闭"};studioRefine(true);polish.onclick=()=>send("refineAtlas",{enabled:!refine});$("check").insertAdjacentElement("afterend",polish);
 const face=document.createElement('button');face.textContent='面部近景';face.style.margin='4px';face.onclick=()=>{yaw=0;pitch=0;zoom=2.5;x=0;y=-1.24;spin=false;$('spin').textContent='自动旋转';pose();$('panel').style.display='none'};$('check').insertAdjacentElement('afterend',face);
 const sssButton=document.createElement('button');sssButton.style.margin='4px';sssButton.disabled=true;let sss=false;window.studioSSS=on=>{sss=on;sssButton.textContent=on?'皮肤散射：开启':'皮肤散射：关闭（测试）'};studioSSS(false);sssButton.onclick=()=>send('sss',{enabled:!sss});$('check').insertAdjacentElement('afterend',sssButton);
+const hairButton=document.createElement('button');hairButton.style.margin='4px';hairButton.disabled=true;let hairOn=false;window.studioHair=on=>{hairOn=on;hairButton.textContent=on?'发束反射：开启':'发束反射：关闭（测试）'};studioHair(false);hairButton.onclick=()=>send('hair',{enabled:!hairOn});$('check').insertAdjacentElement('afterend',hairButton);
 const diag=document.createElement('button');diag.textContent='纹理诊断';diag.style.margin='4px';diag.onclick=()=>send('diagnose');$('check').insertAdjacentElement('afterend',diag);
 window.studioReady=()=>{studioDefaults();send('ready');send('restore');send('quality',{value:2})};studioReady();
 EOF
@@ -926,5 +978,36 @@ MAT
  test -x "$matc"
  "$matc" -p mobile -a opengl -o app/src/main/res/raw/studio_skin.filamat "$tmp/studio_skin.mat"
  test -s app/src/main/res/raw/studio_skin.filamat
+ cat > "$tmp/studio_hair.mat" <<'MAT'
+material {
+    name : Studio_hair_anisotropic,
+    shadingModel : lit,
+    requires : [ uv0 ],
+    parameters : [
+        { type : sampler2d, name : baseColorMap },
+        { type : sampler2d, name : normalMap },
+        { type : sampler2d, name : metallicRoughnessMap },
+        { type : float, name : strength }
+    ],
+    doubleSided : true
+}
+fragment {
+    void material(inout MaterialInputs material) {
+        vec2 uv = getUV0();
+        vec3 n = texture(materialParams_normalMap, uv).xyz * 2.0 - 1.0;
+        material.normal = normalize(vec3(n.xy * 0.48, max(n.z, 0.01)));
+        prepareMaterial(material);
+        vec3 mr = texture(materialParams_metallicRoughnessMap, uv).rgb;
+        material.baseColor = texture(materialParams_baseColorMap, uv);
+        material.metallic = mr.b;
+        material.roughness = clamp(mr.g * 0.97, 0.08, 1.0);
+        material.reflectance = 0.5;
+        material.anisotropy = clamp(materialParams.strength, 0.0, 0.65) * (1.0 - mr.b);
+        material.anisotropyDirection = vec3(0.0, 1.0, 0.0);
+    }
+}
+MAT
+ "$matc" -p mobile -a opengl -o app/src/main/res/raw/studio_hair.filamat "$tmp/studio_hair.mat"
+ test -s app/src/main/res/raw/studio_hair.filamat
  rm -rf "$tmp"
 fi
