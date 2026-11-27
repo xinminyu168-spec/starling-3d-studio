@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 33
-  versionName '3.1.1'
+  versionCode 34
+  versionName '3.2'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -83,6 +83,8 @@ class MainActivity : Activity() {
  private lateinit var appUpdates: AppUpdates
  private var selected = "full"
  private var modelVersion = ""
+ private var resourcePrompted = ""
+ private var resourceDialog: android.app.AlertDialog? = null
  private var checking = false
  private var version = ""
  private var lastCheck = 0L
@@ -102,7 +104,8 @@ class MainActivity : Activity() {
   val top = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
   fun button(label:String, act:()->Unit) { top.addView(Button(this).apply { text=label; setOnClickListener { act() } }) }
   appUpdates=AppUpdates(this)
-  button("检查更新") { appUpdates.check(true); sync() }
+  button("程序更新") { appUpdates.check(true) }
+  button("资源更新") { sync(manual=true) }
   button("原工作台") { finish() }
   button("高精度") { selected="full"; loadMode("full") }
   button("轻量") { selected="mobile"; loadMode("mobile") }
@@ -180,7 +183,7 @@ class MainActivity : Activity() {
    } catch(e:Exception) { tmp.delete(); runOnUiThread { status.text="导入失败："+e.message } }
   }.start()
  }
- private fun sync() {
+ private fun sync(approved:String?=null,manual:Boolean=false) {
   if(checking) return
   checking=true
   Thread {
@@ -192,6 +195,19 @@ class MainActivity : Activity() {
     val e=p.optDouble("exposure",1.0).coerceIn(0.5,1.7).toFloat()
     val k=p.optDouble("key",1.0).coerceIn(0.0,2.0).toFloat()
     val a=p.optDouble("ambient",1.0).coerceIn(0.0,2.0).toFloat()
+    if(approved==null){
+     val current=getSharedPreferences("native_resource_updates",0).getString("appliedVersion","")
+     runOnUiThread{
+      checking=false
+      if(!active||isDestroyed)return@runOnUiThread
+      if(v==current){if(manual)android.widget.Toast.makeText(this,"已是最新资源",0).show();return@runOnUiThread}
+      if(resourceDialog?.isShowing==true||(!manual&&resourcePrompted==v))return@runOnUiThread
+      resourcePrompted=v
+      resourceDialog=android.app.AlertDialog.Builder(this).setTitle("发现资源更新 "+v).setMessage(j.optString("note","模型、贴图或渲染参数更新。确认后才下载并应用。").take(300)).setNegativeButton("稍后",null).setPositiveButton("立即更新"){_,_->sync(v,true)}.show()
+     }
+     return@Thread
+    }
+    require(v==approved){"云端版本已改变，请重新检查"}
     val downloaded=mutableMapOf<String,File>()
     val models=j.optJSONObject("models")
     val prefs=getSharedPreferences("native_resource_updates",0)
@@ -219,18 +235,20 @@ class MainActivity : Activity() {
     runOnUiThread {
      checking=false
      if(isDestroyed){downloaded.values.forEach{it.delete()};return@runOnUiThread}
+     var allOk=true
      if(version!=v){lighting(e,k,a);version=v;status.text="已同步光照："+v}
      for((mode,tmp) in downloaded){
       val dst=File(filesDir,"model-"+mode+".glb");val backup=File(filesDir,"previous-"+mode+".glb")
       if(backup.exists())backup.delete()
-      if(dst.exists()&&!dst.renameTo(backup)){tmp.delete();continue}
+      if(dst.exists()&&!dst.renameTo(backup)){allOk=false;tmp.delete();continue}
       val moved=tmp.renameTo(dst)
       val ok=moved&&(selected!=mode||load(dst))
       if(ok){prefs.edit().putString(mode,models!!.getJSONObject(mode).getString("sha256").lowercase()).apply();backup.delete();status.text="已同步模型："+v}
-      else{dst.delete();if(backup.exists())backup.renameTo(dst);tmp.delete();if(selected==mode)loadMode(mode)}
+      else{allOk=false;dst.delete();if(backup.exists())backup.renameTo(dst);tmp.delete();if(selected==mode)loadMode(mode)}
      }
+     if(allOk)prefs.edit().putString("appliedVersion",v).apply() else status.text="部分资源更新失败，已保留旧模型"
     }
-   } catch(e:Exception) { runOnUiThread { checking=false } }
+   } catch(e:Exception) { runOnUiThread { checking=false;if(manual)status.text="资源更新失败："+e.message } }
   }.start()
  }
  override fun onResume() { super.onResume(); active=true; frames.postFrameCallback(ticker); sync(); appUpdates.start() }
@@ -366,7 +384,7 @@ class AppUpdates(private val activity:Activity) {
   require(info.packageName==activity.packageName && version(info)==v && v>version(current)){"版本或包名不匹配"}
   require(certs(info).isNotEmpty() && certs(info)==certs(current)){"签名不匹配"}
  }
- fun check(manual:Boolean){
+ fun check(manual:Boolean,approved:Long?=null){
   if(busy){if(manual)notify("正在检查或下载更新");return}
   busy=true
   if(manual)notify("正在检查程序版本…")
@@ -375,6 +393,21 @@ class AppUpdates(private val activity:Activity) {
     val j=manifest()
     val v=j.optLong("versionCode",0)
     if(!j.optBoolean("enabled",false)||v<=version(installed())){handler.post{busy=false;if(manual)notify("暂无可安装的新程序版本")};return@Thread}
+    if(approved==null){
+     handler.post{
+      busy=false
+      if(!running||activity.isFinishing||activity.isDestroyed||dialog?.isShowing==true||(!manual&&prompted==v))return@post
+      prompted=v
+      val name=j.optString("versionName",v.toString())
+      val size=j.optLong("size",0)
+      val note=j.optString("note","程序功能与渲染引擎更新").take(300)
+      dialog=AlertDialog.Builder(activity).setTitle("发现新版本 "+name)
+       .setMessage(note+"\n下载大小："+String.format(java.util.Locale.CHINA,"%.1f MB",size/1000000.0)+"\n点击立即更新后才开始下载。")
+       .setNegativeButton("稍后",null).setPositiveButton("立即更新"){_,_->check(true,v)}.show()
+     }
+     return@Thread
+    }
+    require(v==approved){"云端版本已改变，请重新检查"}
     StudioAssets.prepare(activity)
     val expected=j.getString("sha256").lowercase();require(expected.matches(Regex("[0-9a-f]{64}")))
     val size=j.getLong("size");require(size in 1L..900_000_000L)
@@ -398,7 +431,7 @@ class AppUpdates(private val activity:Activity) {
      }finally{c.disconnect();temp.delete()}
     }
     verify(out,v)
-    handler.post{busy=false;if(!activity.isFinishing&&!activity.isDestroyed&&(manual||prompted!=v)&&running){prompted=v;showInstall(out,v)}}
+    handler.post{busy=false;if(!activity.isFinishing&&!activity.isDestroyed&&running){prompted=v;showInstall(out,v)}}
    }catch(e:Exception){handler.post{busy=false;if(manual)notify("更新失败："+(e.message?:"网络异常"))}}
   }.start()
  }
@@ -410,7 +443,7 @@ class AppUpdates(private val activity:Activity) {
     activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,Uri.parse("package:"+activity.packageName)))
    }else{
     val uri=FileProvider.getUriForFile(activity,activity.packageName+".updates",f)
-    try{activity.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri,"application/vnd.android.package-archive").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))}
+    try{activity.startActivity(Intent(Intent.ACTION_INSTALL_PACKAGE).setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION).apply{clipData=android.content.ClipData.newRawUri("APK",uri)})}
     catch(e:Exception){prompted=0L;notify("无法启动系统安装器")}
    }
   }.show()
