@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 50
-  versionName '4.8'
+  versionCode 51
+  versionName '4.9'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -91,7 +91,7 @@ class MainActivity : Activity() {
  private val ticker = object : Choreographer.FrameCallback {
   override fun doFrame(t: Long) {
    if (!active) return
-   if(spinning){yaw=(yaw+0.45f)%360f;applyTransform()}
+   if(spinning&&!exportBusy){yaw=(yaw+0.45f)%360f;applyTransform()}
    viewer.render(t)
    loadProgress()
    if (t-lastCheck>30_000_000_000L) { lastCheck=t; if(initialized&&!pausedResources)sync() }
@@ -104,6 +104,8 @@ class MainActivity : Activity() {
  private var loading=false
  private var exportBusy=false
  private var maxPresetPending=false
+ private var lightProfile=0
+ private var advancedMask=0
  private var loadStart=0L
  private var lastLoadPercent=-1
  private var diagnostic=false
@@ -528,7 +530,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V4.8").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V4.9").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -594,6 +596,7 @@ class MainActivity : Activity() {
    if(data.length>4096)return
    runOnUiThread{
     if(!initialized||isDestroyed)return@runOnUiThread
+    if(exportBusy&&command!="ready")return@runOnUiThread
     try{
      val j=JSONObject(data)
      when(command){
@@ -637,6 +640,9 @@ class MainActivity : Activity() {
       "pores"->{poreStrength=j.optDouble("value",.35).toFloat().coerceIn(0f,1f);sssInstance?.setParameter("poreStrength",poreStrength);prefs.edit().putFloat("poreStrength",poreStrength).apply()}
       "export"->chooseExport()
       "maximum"->maximumPreset()
+      "lightProfile"->chooseLightProfile()
+      "materialCompare"->compareMaterials()
+      "renderAudit"->showRenderAudit()
       "params"->applyUiParams(j)
       "save"->{prefs.edit().putString("params",data).putFloat("skinSoftness",skinSoftness).apply();status.text="渲染参数已保存"}
       "restore"->{js("studioRestore("+JSONObject.quote(prefs.getString("params","")?:"")+")")}
@@ -654,7 +660,7 @@ class MainActivity : Activity() {
    if(loadAsset("native_full.glb"))return
    regionModel=false
   }
-  loadAsset(if(diagnostic||mode=="mobile")"mobile.glb" else "full.glb")
+  if(!loadAsset(if(diagnostic||mode=="mobile")"mobile.glb" else "full.glb"))maxPresetPending=false
  }
  private fun loadAsset(name:String):Boolean {
   return try {
@@ -679,11 +685,52 @@ class MainActivity : Activity() {
   modelAudit+="\n最高画质："+results.joinToString("；")
   return "最高画质 · "+count+"/4 高级材质已启用"
  }
+ private fun syncAdvancedUI(){
+  js("window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")
+ }
+ private fun compareMaterials(){
+  if(!regionModel||loading||diagnostic){Toast.makeText(this,"需要高精度材质分区模型",Toast.LENGTH_SHORT).show();return}
+  val mask=(if(sssInstance!=null)1 else 0) or (if(hairInstance!=null)2 else 0) or (if(clothInstance!=null)4 else 0) or (if(shellInstance!=null)8 else 0)
+  if(mask!=0){
+   advancedMask=mask
+   disableSkinShader();disableHairShader();disableClothShader();disableShellShader()
+   status.text="对照：四套自定义材质已关闭，光照和构图不变"
+  }else{
+   val restore=if(advancedMask==0)15 else advancedMask
+   if(restore and 1!=0)installSkinShader()
+   if(restore and 2!=0)installHairShader()
+   if(restore and 4!=0)installClothShader()
+   if(restore and 8!=0)installShellShader()
+   val n=listOf(sssInstance,hairInstance,clothInstance,shellInstance).count{it!=null}
+   status.text="对照：高级材质已恢复 "+n+" 套"
+  }
+  syncAdvancedUI()
+ }
+ private fun chooseLightProfile(){
+  val labels=arrayOf("电影三点布光 · 标准","柔和棚拍 · 提升补光","轮廓造型 · 减弱补光、增强轮廓")
+  android.app.AlertDialog.Builder(this).setTitle("灯光校准").setSingleChoiceItems(labels,lightProfile){dialog,i->
+   lightProfile=i;dialog.dismiss()
+   lighting(exp,if(flat)0f else keyPower,if(flat)2f else ambientPower)
+   status.text=labels[i]
+   js("window.studioLightProfile&&studioLightProfile("+i+")")
+  }.setNegativeButton("取消",null).show()
+ }
+ private fun showRenderAudit(){
+  val vp=viewer.view.viewport
+  val n=listOf(sssInstance,hairInstance,clothInstance,shellInstance).count{it!=null}
+  val report="实时渲染尺寸："+vp.width+"×"+vp.height+"\n"+
+   "模型："+selected+"；独立分区："+regionModel+"\n"+
+   "高级材质："+n+"/4；动态分辨率：关闭\n"+
+   "高级材质为候选区域，眼球尚未独立重建。\n"+
+   "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
+   "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断").setMessage(report).setPositiveButton("关闭",null).show()
+ }
  private fun maximumPreset(){
   if(exportBusy||loading){Toast.makeText(this,"请先完成当前操作",Toast.LENGTH_SHORT).show();return}
   val reload=!regionModel||selected!="full"||!cinematic||!refineAtlas||diagnostic
   cinematic=true;refineAtlas=true;diagnostic=false;selected="full";qualityLevel=2.0;flat=false
-  exp=1.04f;keyPower=1f;ambientPower=1f
+  exp=1.04f;keyPower=1f;ambientPower=1f;lightProfile=0
   prefs.edit().putBoolean("cinematic",true).putBoolean("refineAtlas",true).putString("model","full").apply()
   js("window.studioMaximum&&studioMaximum()")
   applyStudioLook()
@@ -718,6 +765,7 @@ class MainActivity : Activity() {
    Toast.makeText(this,"可用内存不足，未降低分辨率。请选择较低规格。",Toast.LENGTH_LONG).show();return
   }
   exportBusy=true
+  js("window.studioExportLock&&studioExportLock(true)")
   status.text="准备离屏渲染 "+w+"×"+h
   Toast.makeText(this,status.text,Toast.LENGTH_SHORT).show()
   // Probe actual GLES framebuffer dimensions on a temporary, non-shared context.
@@ -725,9 +773,9 @@ class MainActivity : Activity() {
   Thread{
    val limit=probeRenderLimit(highDepth)
    runOnUiThread{
-    if(isDestroyed||!active){exportBusy=false;return@runOnUiThread}
+    if(isDestroyed||!active){exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");return@runOnUiThread}
     if(limit<maxOf(w,h)){
-     exportBusy=false
+     exportBusy=false;js("window.studioExportLock&&studioExportLock(false)")
      status.text=if(limit<=0)"无法确认 GPU 最大渲染尺寸，未执行导出" else "GPU 最大渲染尺寸 "+limit+"，不支持所选输出"
      Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()
     }else renderExport(w,h,longEdge,highDepth)
@@ -813,30 +861,16 @@ class MainActivity : Activity() {
    val off=engine.createView();v=off
    off.setScene(viewer.scene);off.setCamera(viewer.camera);off.setRenderTarget(rt)
    off.setViewport(Viewport(0,0,w,h))
-   off.setPostProcessingEnabled(!highDepth)
-   off.setColorGrading(if(cinematic)cinematicGrading else neutralGrading)
-   off.setRenderQuality(com.google.android.filament.View.RenderQuality().apply{hdrColorBuffer=com.google.android.filament.View.QualityLevel.ULTRA})
-   off.setDynamicResolutionOptions(com.google.android.filament.View.DynamicResolutionOptions().apply{enabled=false})
-   off.setTemporalAntiAliasingOptions(com.google.android.filament.View.TemporalAntiAliasingOptions().apply{enabled=false})
-   off.setAntiAliasing(if(highDepth)com.google.android.filament.View.AntiAliasing.NONE else com.google.android.filament.View.AntiAliasing.FXAA)
-   off.setMultiSampleAntiAliasingOptions(com.google.android.filament.View.MultiSampleAntiAliasingOptions().apply{enabled=!highDepth&&longEdge<=3840;sampleCount=if(!highDepth&&longEdge<=3840)4 else 1})
-   off.setShadowingEnabled(cinematic)
-   off.setShadowType(if(cinematic)com.google.android.filament.View.ShadowType.PCSS else com.google.android.filament.View.ShadowType.PCF)
-   off.setSoftShadowOptions(com.google.android.filament.View.SoftShadowOptions().apply{penumbraScale=1.2f;penumbraRatioScale=1f})
-   off.setAmbientOcclusionOptions(com.google.android.filament.View.AmbientOcclusionOptions().apply{
-    enabled=cinematic&&!highDepth;radius=.035f;intensity=.35f;power=1f;resolution=if(longEdge<=3840)1f else .5f
-    quality=com.google.android.filament.View.QualityLevel.HIGH
-   })
-   off.setDithering(com.google.android.filament.View.Dithering.NONE)
+   configureLook(off,cinematic&&!diagnostic,true,longEdge,highDepth)
    status.text="离屏渲染 "+w+"×"+h
    viewer.renderer.renderStandaloneView(off)
    val handler=android.os.Handler(mainLooper)
    val descriptor=Texture.PixelBufferDescriptor(data,Texture.Format.RGBA,if(highDepth)Texture.Type.FLOAT else Texture.Type.UBYTE,1,0,0,0,handler,Runnable{
     release()
-    if(isDestroyed){exportBusy=false;return@Runnable}
+    if(isDestroyed){exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");return@Runnable}
     Thread{
      try{
-      if(highDepth){saveHighDepth(data,w,h);runOnUiThread{exportBusy=false;status.text="已保存 "+w+"×"+h+" 64-bit PNG";Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()};return@Thread}
+      if(highDepth){saveHighDepth(data,w,h);runOnUiThread{exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");status.text="已保存 "+w+"×"+h+" 64-bit PNG";Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()};return@Thread}
       val bitmap=android.graphics.Bitmap.createBitmap(w,h,android.graphics.Bitmap.Config.ARGB_8888)
       try{
        val row=IntArray(w);val rgba=data.asIntBuffer();var hasColor=false
@@ -858,15 +892,15 @@ class MainActivity : Activity() {
         contentResolver.openOutputStream(uri,"w")!!.use{require(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it))}
         values.clear();values.put(android.provider.MediaStore.Images.Media.IS_PENDING,0);contentResolver.update(uri,values,null,null)
        }catch(e:Throwable){contentResolver.delete(uri,null,null);throw e}
-       runOnUiThread{exportBusy=false;status.text="已保存 "+w+"×"+h+" PNG";Toast.makeText(this,"已保存到相册 / Starling",Toast.LENGTH_LONG).show()}
+       runOnUiThread{exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");status.text="已保存 "+w+"×"+h+" PNG";Toast.makeText(this,"已保存到相册 / Starling",Toast.LENGTH_LONG).show()}
       }finally{bitmap.recycle()}
-     }catch(e:Throwable){runOnUiThread{exportBusy=false;status.text="输出失败："+e.message;Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()}}
+     }catch(e:Throwable){runOnUiThread{exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");status.text="输出失败："+e.message;Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()}}
     }.start()
    })
    viewer.renderer.readPixels(rt,0,0,w,h,descriptor)
    engine.flush()
   }catch(e:Throwable){
-   release();exportBusy=false;status.text="离屏渲染失败："+e.message;Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()
+   release();exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");status.text="离屏渲染失败："+e.message;Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()
   }
  }
  // PNG color type 6, depth 16. Stream filtered rows through zlib and bounded IDAT chunks.
@@ -921,22 +955,37 @@ class MainActivity : Activity() {
    values.clear();values.put(android.provider.MediaStore.Images.Media.IS_PENDING,0);contentResolver.update(uri,values,null,null)
   }catch(e:Throwable){contentResolver.delete(uri,null,null);throw e}
  }
- private fun applyStudioLook(){
-  val v=viewer.view
-  val quality=cinematic&&!diagnostic
+ // Shared optical settings; only frame-history AA and very large export AO differ.
+ private fun configureLook(v:com.google.android.filament.View,quality:Boolean,export:Boolean=false,longEdge:Int=0,highDepth:Boolean=false){
+  v.setPostProcessingEnabled(!highDepth)
   v.setColorGrading(if(quality)cinematicGrading else neutralGrading)
+  v.setDynamicResolutionOptions(com.google.android.filament.View.DynamicResolutionOptions().apply{enabled=false})
   v.setShadowingEnabled(quality)
   v.setShadowType(if(quality)com.google.android.filament.View.ShadowType.PCSS else com.google.android.filament.View.ShadowType.PCF)
   v.setSoftShadowOptions(com.google.android.filament.View.SoftShadowOptions().apply{penumbraScale=1.2f;penumbraRatioScale=1f})
   v.setAmbientOcclusionOptions(com.google.android.filament.View.AmbientOcclusionOptions().apply{
-   enabled=quality&&qualityLevel>=1.0;radius=.035f;intensity=.35f;power=1f;resolution=if(qualityLevel>=2)1f else .5f
+   enabled=quality&&!highDepth&&qualityLevel>=1.0
+   radius=.035f;intensity=.35f;power=1f
+   resolution=if(qualityLevel>=2&&(!export||longEdge<=3840))1f else .5f
    this.quality=com.google.android.filament.View.QualityLevel.HIGH
+   lowPassFilter=com.google.android.filament.View.QualityLevel.HIGH
+   upsampling=com.google.android.filament.View.QualityLevel.HIGH
   })
-  v.setTemporalAntiAliasingOptions(com.google.android.filament.View.TemporalAntiAliasingOptions().apply{enabled=quality;feedback=.18f;filterWidth=.9f;lodBias=-.5f})
-  v.antiAliasing=if(quality)com.google.android.filament.View.AntiAliasing.NONE else com.google.android.filament.View.AntiAliasing.FXAA
+  v.setTemporalAntiAliasingOptions(com.google.android.filament.View.TemporalAntiAliasingOptions().apply{
+   enabled=quality&&!export&&!highDepth;feedback=.18f;filterWidth=.9f;lodBias=-.5f
+   sharpness=.18f;upscaling=false;preventFlickering=true
+  })
+  v.antiAliasing=if(highDepth||quality&&!export)com.google.android.filament.View.AntiAliasing.NONE else com.google.android.filament.View.AntiAliasing.FXAA
   v.setRenderQuality(com.google.android.filament.View.RenderQuality().apply{hdrColorBuffer=com.google.android.filament.View.QualityLevel.ULTRA})
   v.setDithering(com.google.android.filament.View.Dithering.NONE)
-  v.multiSampleAntiAliasingOptions=v.multiSampleAntiAliasingOptions.apply{enabled=qualityLevel>1;sampleCount=if(qualityLevel>=2)4 else 2}
+  v.setMultiSampleAntiAliasingOptions(com.google.android.filament.View.MultiSampleAntiAliasingOptions().apply{
+   enabled=!highDepth&&qualityLevel>1&&(!export||longEdge<=3840)
+   sampleCount=if(enabled)4 else 1
+  })
+ }
+ private fun applyStudioLook(){
+  val quality=cinematic&&!diagnostic
+  configureLook(viewer.view,quality)
   val lm=viewer.engine.lightManager
   if(mainLamp!=0)lm.setShadowCaster(lm.getInstance(mainLamp),quality)
   val rm=viewer.engine.renderableManager
@@ -951,8 +1000,10 @@ class MainActivity : Activity() {
   viewer.camera.setExposure(16f,1f/100f,100f*e)
   val lm=viewer.engine.lightManager
   if(mainLamp!=0)lm.setIntensity(lm.getInstance(mainLamp),(if(cinematic)46000f else 38000f)*k)
-  if(fillLamp!=0)lm.setIntensity(lm.getInstance(fillLamp),(if(cinematic)20000f else 30000f)*(if(flat)0f else 1f))
-  if(rimLamp!=0)lm.setIntensity(lm.getInstance(rimLamp),(if(cinematic)30000f else 12000f)*(if(flat)0f else 1f))
+  val fillRatio=when(lightProfile){1->1.30f;2->.65f;else->1f}
+  val rimRatio=when(lightProfile){1->.72f;2->1.25f;else->1f}
+  if(fillLamp!=0)lm.setIntensity(lm.getInstance(fillLamp),(if(cinematic)20000f else 30000f)*(if(flat)0f else fillRatio))
+  if(rimLamp!=0)lm.setIntensity(lm.getInstance(rimLamp),(if(cinematic)30000f else 12000f)*(if(flat)0f else rimRatio))
   setEnvironment(a,if(flat)0f else reflectPower)
  }
  private fun load(f:File):Boolean {
@@ -1292,7 +1343,13 @@ const poreValue=document.createElement('span');poreValue.textContent='0.35';pore
 const poreRange=document.createElement('input');poreRange.type='range';poreRange.id='studioPoresRange';poreRange.min='0';poreRange.max='1';poreRange.step='.01';poreRange.value='.35';poreRange.disabled=true;poreRange.style.width='100%';poreWrap.appendChild(poreRange);sssButton.insertAdjacentElement('afterend',poreWrap);
 window.studioPores=v=>{poreRange.value=v;poreValue.textContent=Number(v).toFixed(2)};poreRange.oninput=()=>{const v=Number(poreRange.value);studioPores(v);send('pores',{value:v})};
 const maxButton=document.createElement('button');maxButton.textContent='最高画质 · 全部高级材质';maxButton.style.margin='4px';maxButton.onclick=()=>send('maximum');$('check').insertAdjacentElement('afterend',maxButton);
-window.studioMaximum=()=>{studioLook(true);studioRefine(true);studioModel('full');$('quality').value='2';studioDefaults();send('quality',{value:2})};
+window.studioMaximum=()=>{if(window.studioLightProfile)studioLightProfile(0);studioLook(true);studioRefine(true);studioModel('full');$('quality').value='2';studioDefaults();send('quality',{value:2})};
+const lightingButton=document.createElement('button');lightingButton.textContent='灯光校准 · 标准三点布光';lightingButton.style.margin='4px';lightingButton.onclick=()=>send('lightProfile');$('check').insertAdjacentElement('afterend',lightingButton);
+window.studioLightProfile=i=>{lightingButton.textContent='灯光校准 · '+['标准三点布光','柔和棚拍','轮廓造型'][i]};
+const compareMaterials=document.createElement('button');compareMaterials.textContent='高级材质 / PBR 对照';compareMaterials.style.margin='4px';compareMaterials.onclick=()=>send('materialCompare');$('check').insertAdjacentElement('afterend',compareMaterials);
+const auditButton=document.createElement('button');auditButton.textContent='渲染诊断报告';auditButton.style.margin='4px';auditButton.onclick=()=>send('renderAudit');$('check').insertAdjacentElement('afterend',auditButton);
+const exportLock=document.createElement('div');exportLock.style.cssText='display:none;position:fixed;inset:0;background:rgba(0,0,0,.48);color:white;z-index:2147483647;align-items:center;justify-content:center;text-align:center;padding:24px;touch-action:none';exportLock.textContent='正在原生离屏渲染并写入相册，请保持 APP 在前台';document.body.appendChild(exportLock);
+window.studioExportLock=on=>{exportLock.style.display=on?'flex':'none';pointers.clear()};
 const exportButton=document.createElement('button');exportButton.textContent='超高清渲染输出';exportButton.style.margin='4px';exportButton.onclick=()=>send('export');$('check').insertAdjacentElement('afterend',exportButton);
 const diag=document.createElement('button');diag.textContent='纹理诊断';diag.style.margin='4px';diag.onclick=()=>send('diagnose');$('check').insertAdjacentElement('afterend',diag);
 window.studioReady=()=>{studioDefaults();send('ready');send('restore');send('quality',{value:2})};studioReady();
