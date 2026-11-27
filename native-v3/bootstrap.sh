@@ -279,6 +279,7 @@ class StudioActivity : Activity() {
   updates=AppUpdates(this)
   val frame=FrameLayout(this)
   web=WebView(this)
+  web.webChromeClient=android.webkit.WebChromeClient()
   web.settings.javaScriptEnabled=true
   web.settings.domStorageEnabled=true
   web.settings.allowFileAccess=false
@@ -304,7 +305,17 @@ class StudioActivity : Activity() {
     if(u.scheme!="https"||u.host!="appassets.androidplatform.net")return null
     val name=u.path?.removePrefix("/studio/")?:""
     val mime=when(name){"viewer.html"->"text/html";"reference.png"->"image/png";"full.glb","mobile.glb"->"model/gltf-binary";"studio_env.rgba"->"application/octet-stream";else->return android.webkit.WebResourceResponse("text/plain","UTF-8",404,"Not Found",emptyMap(),java.io.ByteArrayInputStream(ByteArray(0)))}
-    return try{android.webkit.WebResourceResponse(mime,if(name=="viewer.html")"UTF-8" else null,StudioAssets.file(this@StudioActivity,name).inputStream())}catch(e:Exception){android.webkit.WebResourceResponse("text/plain","UTF-8",404,"Not Found",emptyMap(),java.io.ByteArrayInputStream(ByteArray(0)))}
+    return try{
+     val asset=StudioAssets.file(this@StudioActivity,name)
+     val input=if(name=="viewer.html"){
+      val html=asset.readText(Charsets.UTF_8)
+       .replace("let activeUpdate=false;", "let dismissedVersion='';let activeUpdate=false;")
+       .replace("window.removeEventListener('message',receive);clearTimeout(timer);try{let d=e.data;", "if(e.data.offer){let d=e.data;if(quiet&&dismissedVersion===d.version){finish();return;}if(!window.confirm('发现资源更新 '+d.version+'\\n'+String(d.note||'')+'\\n点击确定后才下载。')){dismissedVersion=d.version;finish();\$('status').textContent='已暂缓更新';return;}f.contentWindow.postMessage({type:'starling-download',protocol:2,nonce,current:getstore('resourceVersion')||'builtin',approved:d.version},url.origin);return;}window.removeEventListener('message',receive);clearTimeout(timer);try{let d=e.data;")
+       .replace("type:'starling-check',nonce,current:", "type:'starling-check',protocol:2,nonce,current:")
+      java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8))
+     }else asset.inputStream()
+     android.webkit.WebResourceResponse(mime,if(name=="viewer.html")"UTF-8" else null,input)
+    }catch(e:Exception){android.webkit.WebResourceResponse("text/plain","UTF-8",404,"Not Found",emptyMap(),java.io.ByteArrayInputStream(ByteArray(0)))}
    }
   }
   button.isEnabled=false
