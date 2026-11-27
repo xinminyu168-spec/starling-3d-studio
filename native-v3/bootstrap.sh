@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 61
-  versionName '5.9'
+  versionCode 62
+  versionName '6.0'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -106,6 +106,8 @@ class MainActivity : Activity() {
  private var maxPresetPending=false
  private var eyePreparing=false
  private var eyeActive=false
+ private var irisBoundSlots=0
+ private var irisLastResult="尚未启用"
  private var lightProfile=0
  private var advancedMask=0
  private var loadStart=0L
@@ -133,7 +135,7 @@ class MainActivity : Activity() {
  private val skinBindings=mutableListOf<SkinBinding>()
  private data class Atlas(val parameter:String,val image:ByteArray,val srgb:Boolean)
  private var pendingAtlas=listOf<Atlas>()
- private fun clearExplicit(){uvProbeBindings.clear();uvProbeInstance?.let{viewer.engine.destroyMaterialInstance(it)};uvProbeInstance=null;shellBindings.clear();shellInstance?.let{viewer.engine.destroyMaterialInstance(it)};shellInstance=null;clothBindings.clear();clothInstance?.let{viewer.engine.destroyMaterialInstance(it)};clothInstance=null;hairBindings.clear();hairInstance?.let{viewer.engine.destroyMaterialInstance(it)};hairInstance=null;skinMaterials.clear();skinBindings.clear();sssInstance?.let{viewer.engine.destroyMaterialInstance(it)};sssInstance=null;boundAtlas.clear();for(t in explicitTextures)viewer.engine.destroyTexture(t);explicitTextures.clear();pendingAtlas=emptyList()}
+ private fun clearExplicit(){irisBoundSlots=0;uvProbeBindings.clear();uvProbeInstance?.let{viewer.engine.destroyMaterialInstance(it)};uvProbeInstance=null;shellBindings.clear();shellInstance?.let{viewer.engine.destroyMaterialInstance(it)};shellInstance=null;clothBindings.clear();clothInstance?.let{viewer.engine.destroyMaterialInstance(it)};clothInstance=null;hairBindings.clear();hairInstance?.let{viewer.engine.destroyMaterialInstance(it)};hairInstance=null;skinMaterials.clear();skinBindings.clear();sssInstance?.let{viewer.engine.destroyMaterialInstance(it)};sssInstance=null;boundAtlas.clear();for(t in explicitTextures)viewer.engine.destroyTexture(t);explicitTextures.clear();pendingAtlas=emptyList()}
  // The shared atlas has no semantic material ID. Only refine conservative
  // colour/roughness candidates; do not relabel arbitrary regions as skin/cloth.
  private fun decodedAtlas(a:Atlas,mutable:Boolean=false):android.graphics.Bitmap{
@@ -199,8 +201,24 @@ class MainActivity : Activity() {
   }
   require(notes.isNotEmpty()){"未绑定任何纹理"}
   if(regionModel)notes.add(refineRegions(instances))
+  if(eyeActive)notes.add(bindIrisParameters(instances))
   modelAudit+="\nAndroid 独立解码与显式绑定："+notes.joinToString("；")
   pendingAtlas=emptyList()
+ }
+ private fun bindIrisParameters(instances:List<MaterialInstance>):String{
+  val names=setOf("Iris_candidate_General","Iris_candidate_Skin_candidate")
+  val iris=instances.filter{it.name in names}
+  require(iris.map{it.name}.toSet()==names){"虹膜候选材质未完整绑定"}
+  val params=listOf("metallicFactor","roughnessFactor","normalScale")
+  require(iris.all{mi->params.all{mi.material.hasParameter(it)}}){"虹膜 PBR 参数不兼容"}
+  for(mi in iris){
+   mi.setParameter("metallicFactor",0f)
+   mi.setParameter("roughnessFactor",.65f)
+   mi.setParameter("normalScale",.20f)
+  }
+  irisBoundSlots=iris.size
+  irisLastResult="已绑定 2 个候选材质 / "+irisBoundSlots+" 个图元实例"
+  return "虹膜 PBR："+irisLastResult+"；金属度倍率 0，粗糙度倍率 0.65，法线强度 0.20"
  }
  // The actual glTF instance labels are supplied by AssetLoader; unknown names
  // always retain the original glTF values. No whole-model metal or color override.
@@ -412,7 +430,7 @@ class MainActivity : Activity() {
  }
  private fun fallbackRegion(reason:String):Boolean{
   if(!regionModel)return false
-  if(eyeActive){eyeActive=false;js("window.studioIris&&studioIris(false)");if(loadAsset("native_full.glb"))return true}
+  if(eyeActive){irisLastResult="试验失败，恢复原分区："+reason;eyeActive=false;js("window.studioIris&&studioIris(false)");if(loadAsset("native_full.glb"))return true}
   regionModel=false
   status.text="分区加载失败，恢复原模型："+reason
   return loadAsset("full.glb")
@@ -432,7 +450,7 @@ class MainActivity : Activity() {
    js("window.studioIris&&studioIris("+eyeActive+")")
    if(eyeActive)modelAudit+="\n虹膜试验：69 个候选面 · 原模型未覆盖"
    val presetReport=if(maxPresetPending){maxPresetPending=false;"最高画质 · 原 PBR 安全模式；请逐项测试高级材质"}else null
-   status.text=presetReport?:if(diagnostic)"仅色彩图诊断 · 已加载" else if(cinematic)"影视渲染 · 纹理绑定完成" else "保真渲染 · 纹理绑定完成"
+   status.text=presetReport?:if(eyeActive)"虹膜反射试验 · "+irisLastResult else if(diagnostic)"仅色彩图诊断 · 已加载" else if(cinematic)"影视渲染 · 纹理绑定完成" else "保真渲染 · 纹理绑定完成"
    js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")
   }else if(android.os.SystemClock.elapsedRealtime()-loadStart>60000L){
    loading=false
@@ -539,7 +557,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V5.9").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V6.0").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -690,8 +708,9 @@ class MainActivity : Activity() {
  }
  private fun toggleIrisTest(){
   if(loading||exportBusy||eyePreparing||diagnostic||!regionModel||viewer.asset==null){Toast.makeText(this,"请先加载高精度分区模型",Toast.LENGTH_SHORT).show();return}
-  if(eyeActive){loadMode(selected);return}
+  if(eyeActive){irisLastResult="用户关闭试验";loadMode(selected);return}
   eyePreparing=true
+  irisLastResult="正在生成缓存"
   status.text="正在生成虹膜试验模型 · 原始资源不变"
   Thread{
    val result=runCatching{IrisPatch.prepare(StudioAssets.file(this,"native_full.glb"),cacheDir)}
@@ -700,8 +719,8 @@ class MainActivity : Activity() {
     if(isDestroyed||isFinishing||loading||!regionModel||diagnostic||selected!="full")return@runOnUiThread
     result.fold(onSuccess={file->
      eyeActive=true
-     if(!load(file)){eyeActive=false;loadMode(selected)}
-    },onFailure={e->status.text="虹膜试验未开启："+e.message})
+     if(!load(file)){irisLastResult="试验模型加载失败："+status.text;eyeActive=false;loadMode(selected)}
+    },onFailure={e->irisLastResult="缓存生成失败："+e.message;status.text=irisLastResult})
    }
   }.start()
  }
@@ -741,6 +760,7 @@ class MainActivity : Activity() {
   Toast.makeText(this,status.text,Toast.LENGTH_SHORT).show()
  }
  private fun compareMaterials(){
+  if(eyeActive){Toast.makeText(this,"请先关闭虹膜试验，再进行原 PBR 对照",Toast.LENGTH_SHORT).show();return}
   if(!regionModel||loading||diagnostic){Toast.makeText(this,"需要高精度材质分区模型",Toast.LENGTH_SHORT).show();return}
   val mask=(if(sssInstance!=null)1 else 0) or (if(hairInstance!=null)2 else 0) or (if(clothInstance!=null)4 else 0) or (if(shellInstance!=null)8 else 0)
   if(mask!=0){
@@ -931,10 +951,16 @@ class MainActivity : Activity() {
    "模型："+selected+"；独立分区："+regionModel+"\n"+
    "高级材质："+n+"/4；动态分辨率：关闭\n"+
    "最近 UV 检测："+uvResult+"\n"+
-   "四套高级材质已统一 glTF UV 方向（flipUV=false），需逐项真机验证。眼球尚未独立重建。\n"+
+   "虹膜试验："+(if(eyePreparing)"准备中" else if(eyeActive&&loading)"加载中" else if(eyeActive&&irisBoundSlots>0)"已绑定" else "关闭")+"；最近结果："+irisLastResult+"\n"+
+   "四套高级材质已统一 glTF UV 方向（flipUV=false），需逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
-  android.app.AlertDialog.Builder(this).setTitle("渲染诊断").setMessage(report).setPositiveButton("关闭",null).show()
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V6.0").setMessage(report)
+   .setNegativeButton("关闭",null).setPositiveButton("复制报告"){_,_->
+    val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V6.0",report))
+    Toast.makeText(this,"诊断报告已复制",Toast.LENGTH_SHORT).show()
+   }.show()
  }
  private fun maximumPreset(){
   if(exportBusy||loading){Toast.makeText(this,"请先完成当前操作",Toast.LENGTH_SHORT).show();return}
