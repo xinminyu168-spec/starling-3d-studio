@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 35
-  versionName '3.3'
+  versionCode 36
+  versionName '3.4'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -109,6 +109,11 @@ class MainActivity : Activity() {
  private var exp=1.04f
  private var keyPower=1f
  private var ambientPower=1f
+ private var reflectPower=.85f
+ private var envTexture:Texture?=null
+ private var envSH:FloatArray?=null
+ private var lastAmbient=-1f
+ private var lastReflect=-1f
  private var rough=1.13f
  private var normal=0.38f
  private var flat=false
@@ -144,14 +149,22 @@ class MainActivity : Activity() {
   val engine=viewer.engine
   ibl=IndirectLight.Builder().irradiance(1,floatArrayOf(0.65f,0.68f,0.72f)).intensity(18000f).build(engine)
   viewer.scene.indirectLight=ibl
+  try{
+   val bytes=assets.open("studio_ibl.ktx").use{it.readBytes()}
+   val b=ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder());b.put(bytes);b.flip()
+   envSH=com.google.android.filament.utils.KTX1Loader.getSphericalHarmonics(b)
+   b.rewind()
+   envTexture=com.google.android.filament.utils.KTX1Loader.createTexture(engine,b)
+   setEnvironment(ambientPower,reflectPower)
+  }catch(e:Exception){status.text="HDR 环境载入失败，使用基础环境光"}
   viewer.scene.skybox=Skybox.Builder().color(0.017f,0.02f,0.027f,1f).build(engine)
   viewer.view.ambientOcclusion=com.google.android.filament.View.AmbientOcclusion.SSAO
   viewer.view.antiAliasing=com.google.android.filament.View.AntiAliasing.FXAA
   viewer.view.renderQuality=viewer.view.renderQuality.apply { hdrColorBuffer=com.google.android.filament.View.QualityLevel.HIGH }
   viewer.view.dynamicResolutionOptions=viewer.view.dynamicResolutionOptions.apply { enabled=false }
   viewer.view.multiSampleAntiAliasingOptions=viewer.view.multiSampleAntiAliasingOptions.apply { enabled=true; sampleCount=4 }
-  addLight(-0.6f,-0.45f,-0.5f,23000f)
-  addLight(0.4f,-0.5f,0.7f,28000f)
+  addLight(-0.6f,-0.45f,-0.5f,14000f)
+  addLight(0.4f,-0.5f,0.7f,24000f)
   web.webViewClient=object:android.webkit.WebViewClient(){
    override fun shouldOverrideUrlLoading(view:android.webkit.WebView,request:android.webkit.WebResourceRequest)=true
    override fun shouldInterceptRequest(view:android.webkit.WebView,request:android.webkit.WebResourceRequest):android.webkit.WebResourceResponse{
@@ -162,7 +175,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V3.3").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V3.4").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -199,6 +212,19 @@ class MainActivity : Activity() {
   val tm=viewer.engine.transformManager
   tm.setTransform(tm.getInstance(asset.root),result)
  }
+ private fun setEnvironment(a:Float,r:Float){
+  val t=envTexture
+  val sh=envSH
+  if(t==null||sh==null){ibl.intensity=18000f*a;return}
+  if(a==lastAmbient&&r==lastReflect)return
+  val spec=r.coerceAtLeast(.01f)
+  val next=IndirectLight.Builder().reflections(t).irradiance(3,sh.map{it*a/spec}.toFloatArray()).intensity(28000f*spec).build(viewer.engine)
+  val old=ibl
+  viewer.scene.indirectLight=next
+  ibl=next
+  viewer.engine.destroyIndirectLight(old)
+  lastAmbient=a;lastReflect=r
+ }
  private fun applyMaterial(){
   val asset=viewer.asset?:return
   val rm=viewer.engine.renderableManager
@@ -206,8 +232,15 @@ class MainActivity : Activity() {
    val inst=rm.getInstance(entity);if(inst==0)continue
    for(i in 0 until rm.getPrimitiveCount(inst)){
     val mat=rm.getMaterialInstanceAt(inst,i)
-    if(mat.material.hasParameter("roughnessFactor"))mat.setParameter("roughnessFactor",rough.coerceIn(0.65f,1.6f))
-    if(mat.material.hasParameter("normalScale"))mat.setParameter("normalScale",normal)
+    val name=mat.name.lowercase()
+    val r=when{ "skin" in name->.98f; "fabric" in name->1f; "hair" in name->.89f; "shell" in name->.78f; "metal" in name->.82f;else->.95f}
+    val n=when{ "skin" in name->.3f; "fabric" in name->.85f; "hair" in name->.65f;else->.8f}
+    if(mat.material.hasParameter("roughnessFactor"))mat.setParameter("roughnessFactor",(r*rough).coerceIn(.25f,1f))
+    if(mat.material.hasParameter("normalScale"))mat.setParameter("normalScale",(n*normal).coerceIn(0f,1f))
+    if(mat.material.hasParameter("metallicFactor")){
+     val metal=when{"skin" in name||"hair" in name||"fabric" in name->0f;"shell" in name->.25f;else->1f}
+     mat.setParameter("metallicFactor",metal)
+    }
    }
   }
  }
@@ -217,6 +250,7 @@ class MainActivity : Activity() {
   ambientPower=j.optDouble("ambient",1.0).toFloat().coerceIn(0f,2f)
   rough=j.optDouble("rough",1.13).toFloat().coerceIn(.65f,1.6f)
   normal=j.optDouble("normal",.38).toFloat().coerceIn(0f,1f)
+  reflectPower=j.optDouble("reflect",.85).toFloat().coerceIn(0f,2f)
   flat=j.optBoolean("flat",false)
   lighting(exp,if(flat)0f else keyPower,if(flat)2f else ambientPower)
   applyMaterial()
@@ -263,8 +297,8 @@ class MainActivity : Activity() {
  private fun lighting(e:Float,k:Float,a:Float) {
   viewer.camera.setExposure(16f,1f/125f,100f*e)
   val lm=viewer.engine.lightManager
-  lm.setIntensity(lm.getInstance(viewer.light),65000f*k)
-  ibl.intensity=18000f*a
+  lm.setIntensity(lm.getInstance(viewer.light),38000f*k)
+  setEnvironment(a,if(flat)0f else reflectPower)
  }
  private fun load(f:File):Boolean {
   try {
@@ -346,7 +380,7 @@ class MainActivity : Activity() {
      checking=false
      if(isDestroyed){downloaded.values.forEach{it.delete()};return@runOnUiThread}
      var allOk=true
-     if(version!=v){applyUiParams(p);js("studioCloud("+JSONObject.quote(p.toString())+")");version=v;status.text="已同步光照："+v}
+     if(version!=v){applyUiParams(p);js("studioCloud("+JSONObject.quote(p.toString())+")");prefs.edit().putString("params",p.toString()).apply();version=v;status.text="已同步光照："+v}
      for((mode,tmp) in downloaded){
       val dst=File(filesDir,"model-"+mode+".glb");val backup=File(filesDir,"previous-"+mode+".glb")
       if(backup.exists())backup.delete()
@@ -557,7 +591,7 @@ $('compare').onclick=()=>{compare=!compare;document.body.classList.toggle('compa
 function params(){let p={};for(const n of names){p[n]=Number($(n).value);$(n+'V').value=p[n].toFixed(2)}p.flat=$('light').value==='0';return p}
 function apply(p){for(const n of names)if(Number.isFinite(p[n]))$(n).value=p[n];if(typeof p.flat==='boolean')$('light').value=p.flat?'0':'1';send('params',params())}
 for(const n of names)$(n).oninput=()=>send('params',params());
-$('skin').disabled=true;$('skin').title='独立皮肤着色尚未迁移';$('reflect').disabled=true;$('reflect').title='独立 HDRI 反射尚未迁移';
+$('skin').disabled=true;$('skin').title='独立皮肤着色尚未迁移';$('reflect').title='HDR 环境反射强度';
 $('light').options[1].textContent='柔和平光';$('light').onchange=()=>send('params',params());
 $('quality').onchange=()=>send('quality',{value:Number($('quality').value)});
 $('save').onclick=()=>send('save',params());window.studioDefaults=()=>apply({...defaults,flat:false});$('defaults').onclick=studioDefaults;
@@ -571,3 +605,20 @@ $('model').onchange=()=>change($('model').value);$('switchModel').onclick=()=>ch
 $('endpoint').value='https://xinminyu168-spec.github.io/starling-3d-studio/';$('endpoint').readOnly=true;$('check').onclick=()=>send('check');$('rollback').onclick=()=>send('rollback');
 window.studioReady=()=>{send('ready');send('restore');send('quality',{value:2})};studioReady();$('msg').style.display='none';
 EOF
+
+# Build the same prefiltered environment format used by Filament's Android samples.
+# Pinned engine version, public CC0 environment only; no private character data.
+if [ "${STARLING_SKIP_IBL:-0}" != 1 ]; then
+ tmp="$(mktemp -d)"
+ curl --fail --location --retry 3 --max-time 180 'https://github.com/google/filament/releases/download/v1.56.0/filament-v1.56.0-linux.tgz' -o "$tmp/filament.tgz"
+ tar -xzf "$tmp/filament.tgz" -C "$tmp"
+ cmgen="$(find "$tmp" -type f -name cmgen -print -quit)"
+ test -x "$cmgen"
+ curl --fail --location --retry 3 --max-time 90 'https://raw.githubusercontent.com/google/filament/v1.56.0/third_party/environments/lightroom_14b.hdr' -o "$tmp/studio.hdr"
+ mkdir -p "$tmp/ibl"
+ "$cmgen" -q --format=ktx --size=256 --extract-blur=0.1 --deploy="$tmp/ibl" "$tmp/studio.hdr"
+ ibl="$(find "$tmp/ibl" -name '*_ibl.ktx' -print -quit)"
+ test -s "$ibl"
+ cp "$ibl" app/src/main/assets/studio_ibl.ktx
+ rm -rf "$tmp"
+fi
