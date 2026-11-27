@@ -21,6 +21,9 @@ jobs:
           dir="$sdk/build-tools/35.0.0"
           mkdir -p /tmp/apk-validation
           cp "$dir/lib/apksigner.jar" "$dir/aapt" "$dir/zipalign" /tmp/apk-validation/
+          lib="$(find "$dir" -name libc++.so -print -quit)"
+          test -n "$lib"
+          cp "$lib" /tmp/apk-validation/
       - uses: actions/upload-artifact@v4
         with:
           name: apk-validation-tools
