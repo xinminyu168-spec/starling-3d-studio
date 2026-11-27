@@ -18,6 +18,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=pending -f context=starling/publish -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Read signed release metadata
         id: meta
         run: |
@@ -49,7 +51,17 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add "updates/starling-v$VERSION.apk" app-update.json
           git commit -m "Publish signed program update $VERSION"
-          git push origin HEAD:main
+          for attempt in 1 2 3; do
+            git fetch origin main
+            remote_version=$(git show origin/main:app-update.json | jq -er '.versionCode | numbers')
+            if [ "$remote_version" -ge "$VERSION" ]; then
+              echo "Remote manifest already has this version or newer; refusing overwrite"
+              exit 1
+            fi
+            git rebase origin/main
+            if git push origin HEAD:main; then exit 0; fi
+          done
+          exit 1
       - name: Report result
         if: always()
         env:
