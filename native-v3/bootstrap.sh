@@ -80,6 +80,9 @@ class MainActivity : Activity() {
  private lateinit var surface: SurfaceView
  private lateinit var ibl: IndirectLight
  private var active = false
+ private lateinit var appUpdates: AppUpdates
+ private var selected = "full"
+ private var modelVersion = ""
  private var checking = false
  private var version = ""
  private var lastCheck = 0L
@@ -98,9 +101,11 @@ class MainActivity : Activity() {
   val root = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(17,19,24)) }
   val top = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
   fun button(label:String, act:()->Unit) { top.addView(Button(this).apply { text=label; setOnClickListener { act() } }) }
+  appUpdates=AppUpdates(this)
+  button("检查更新") { appUpdates.check(true); sync() }
   button("原工作台") { finish() }
-  button("高精度") { loadAsset("native_full.glb") }
-  button("轻量") { loadAsset("mobile.glb") }
+  button("高精度") { selected="full"; loadMode("full") }
+  button("轻量") { selected="mobile"; loadMode("mobile") }
   button("导入 GLB") { val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type="*/*" }; startActivityForResult(i,7) }
   button("同步光照") { sync() }
   button("重置光照") { version=""; lighting(1f,1f,1f) }
@@ -124,7 +129,12 @@ class MainActivity : Activity() {
   addLight(-0.6f,-0.45f,-0.5f,23000f)
   addLight(0.4f,-0.5f,0.7f,28000f)
   val saved=File(filesDir,"character.glb")
-  if(saved.exists()) load(saved) else loadAsset("native_full.glb")
+  if(saved.exists()) { selected="imported"; load(saved) } else loadMode("full")
+ }
+ private fun loadMode(mode:String) {
+  val f=File(filesDir,"model-"+mode+".glb")
+  if(f.exists() && load(f))return
+  loadAsset(if(mode=="full")"native_full.glb" else "mobile.glb")
  }
  private fun loadAsset(name:String) {
   try {
@@ -148,14 +158,14 @@ class MainActivity : Activity() {
   lm.setIntensity(lm.getInstance(viewer.light),65000f*k)
   ibl.intensity=18000f*a
  }
- private fun load(f:File) {
+ private fun load(f:File):Boolean {
   try {
    val n=f.length(); require(n in 20L..150_000_000L)
    val b=ByteBuffer.allocateDirect(n.toInt()).order(ByteOrder.LITTLE_ENDIAN)
    f.inputStream().channel.use { ch -> while(b.hasRemaining()) { if(ch.read(b)<0) error("文件不完整") } }
    b.flip(); require(b.getInt(0)==0x46546c67); require(b.getInt(4)==2); require(b.getInt(8)==n.toInt())
-   viewer.loadModelGlb(b); viewer.transformToUnitCube(); status.text="Filament · 已导入"
-  } catch(e:Exception) { status.text="加载失败："+e.message }
+   viewer.loadModelGlb(b); viewer.transformToUnitCube(); status.text="Filament · 已导入"; return true
+  } catch(e:Exception) { status.text="加载失败："+e.message; return false }
  }
  override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
   super.onActivityResult(requestCode,resultCode,data)
@@ -171,7 +181,7 @@ class MainActivity : Activity() {
     } }
     java.io.RandomAccessFile(tmp,"r").use { r -> require(r.length()>=20); require(Integer.reverseBytes(r.readInt())==0x46546c67); require(Integer.reverseBytes(r.readInt())==2); require(Integer.reverseBytes(r.readInt()).toLong()==r.length()) }
     val dst=File(filesDir,"character.glb"); require(tmp.renameTo(dst))
-    runOnUiThread { if(!isDestroyed) load(dst) }
+    runOnUiThread { if(!isDestroyed) { selected="imported"; load(dst) } }
    } catch(e:Exception) { tmp.delete(); runOnUiThread { status.text="导入失败："+e.message } }
   }.start()
  }
@@ -182,17 +192,54 @@ class MainActivity : Activity() {
    try {
     val c=URL("https://xinminyu168-spec.github.io/starling-3d-studio/manifest.json").openConnection() as HttpsURLConnection
     c.connectTimeout=8000; c.readTimeout=8000; c.useCaches=false; c.instanceFollowRedirects=false
-    val text=try { require(c.responseCode==200); c.inputStream.bufferedReader().use { it.readText().also { s -> require(s.length<32768) } } } finally { c.disconnect() }
+    val text=try { require(c.responseCode==200); c.inputStream.use { input -> val out=java.io.ByteArrayOutputStream();val buf=ByteArray(4096);while(true){val n=input.read(buf);if(n<0)break;require(out.size()+n<=32768);out.write(buf,0,n)};out.toString("UTF-8") } } finally { c.disconnect() }
     val j=JSONObject(text); val v=j.getString("version"); val p=j.getJSONObject("params")
     val e=p.optDouble("exposure",1.0).coerceIn(0.5,1.7).toFloat()
     val k=p.optDouble("key",1.0).coerceIn(0.0,2.0).toFloat()
     val a=p.optDouble("ambient",1.0).coerceIn(0.0,2.0).toFloat()
-    runOnUiThread { checking=false; if(!isDestroyed&&version!=v) { lighting(e,k,a); version=v; status.text="已同步光照："+v } }
+    val downloaded=mutableMapOf<String,File>()
+    val models=j.optJSONObject("models")
+    val prefs=getSharedPreferences("native_resource_updates",0)
+    for(mode in listOf("full","mobile")){
+     val spec=models?.optJSONObject(mode)?:continue
+     val hash=spec.getString("sha256").lowercase()
+     require(hash.matches(Regex("[0-9a-f]{64}")))
+     if(prefs.getString(mode,"")==hash && File(filesDir,"model-"+mode+".glb").exists())continue
+     val path=spec.getString("file")
+     require(path.matches(Regex("[A-Za-z0-9_/.-]+"))&&!path.startsWith("/")&&!path.split("/").contains("..")&&path.endsWith(".glb"))
+     val length=spec.getLong("size");require(length in 20L..150_000_000L)
+     require(filesDir.usableSpace>length+20_000_000L)
+     val tmp=File(filesDir,"pending-"+mode+".glb")
+     val conn=URL("https://xinminyu168-spec.github.io/starling-3d-studio/"+path).openConnection() as HttpsURLConnection
+     conn.connectTimeout=10000;conn.readTimeout=30000;conn.instanceFollowRedirects=false;conn.useCaches=false
+     try{
+      require(conn.responseCode==200)
+      val md=java.security.MessageDigest.getInstance("SHA-256");var total=0L
+      conn.inputStream.use{input->tmp.outputStream().use{output->val b=ByteArray(65536);while(true){val n=input.read(b);if(n<0)break;total+=n;require(total<=length);output.write(b,0,n);md.update(b,0,n)}}}
+      require(total==length&&md.digest().joinToString(""){"%02x".format(it)}==hash)
+      java.io.RandomAccessFile(tmp,"r").use{r->require(Integer.reverseBytes(r.readInt())==0x46546c67);require(Integer.reverseBytes(r.readInt())==2);require(Integer.reverseBytes(r.readInt()).toLong()==r.length())}
+      downloaded[mode]=tmp
+     }catch(e:Exception){tmp.delete();throw e}finally{conn.disconnect()}
+    }
+    runOnUiThread {
+     checking=false
+     if(isDestroyed){downloaded.values.forEach{it.delete()};return@runOnUiThread}
+     if(version!=v){lighting(e,k,a);version=v;status.text="已同步光照："+v}
+     for((mode,tmp) in downloaded){
+      val dst=File(filesDir,"model-"+mode+".glb");val backup=File(filesDir,"previous-"+mode+".glb")
+      if(backup.exists())backup.delete()
+      if(dst.exists()&&!dst.renameTo(backup)){tmp.delete();continue}
+      val moved=tmp.renameTo(dst)
+      val ok=moved&&(selected!=mode||load(dst))
+      if(ok){prefs.edit().putString(mode,models!!.getJSONObject(mode).getString("sha256").lowercase()).apply();backup.delete();status.text="已同步模型："+v}
+      else{dst.delete();if(backup.exists())backup.renameTo(dst);tmp.delete();if(selected==mode)loadMode(mode)}
+     }
+    }
    } catch(e:Exception) { runOnUiThread { checking=false } }
   }.start()
  }
- override fun onResume() { super.onResume(); active=true; frames.postFrameCallback(ticker); sync() }
- override fun onPause() { active=false; frames.removeFrameCallback(ticker); super.onPause() }
+ override fun onResume() { super.onResume(); active=true; frames.postFrameCallback(ticker); sync(); appUpdates.start() }
+ override fun onPause() { active=false; frames.removeFrameCallback(ticker); appUpdates.stop(); super.onPause() }
 }
 EOF
 # Avoid android.view.View name conflict with Filament View.
@@ -326,7 +373,7 @@ class AppUpdates(private val activity:Activity) {
     if(!out.exists()||out.length()!=size||hash(out)!=expected){
      require(dir.usableSpace>size+20_000_000L){"存储空间不足"}
      handler.post{notify("发现新版本，正在下载")}
-     val temp=File(dir,"update-"+v+".part")
+     val temp=File(dir,"update-"+v+".part.apk")
      val c=connect(url)
      try{
       require(c.responseCode==200)
