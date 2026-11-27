@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "enabled": true,
-  "versionCode": 38,
-  "versionName": "3.6",
-  "url": "https://raw.githubusercontent.com/xinminyu168-spec/starling-3d-studio/main/updates/starling-v38.apk",
-  "sha256": "6d96c612171f9069931b26014d299fa9b2df0decb3abfc132d58e1df515f06e0",
+  "versionCode": 39,
+  "versionName": "3.7",
+  "url": "https://raw.githubusercontent.com/xinminyu168-spec/starling-3d-studio/main/updates/starling-v39.apk",
+  "sha256": "fdc461df6c425765390ced11b5b7234085e4dcb280d7c8763a3d7d232ba7a2ba",
   "size": 10224994
 }
