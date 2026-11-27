@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 43
-  versionName '4.1'
+  versionCode 44
+  versionName '4.2'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -109,7 +109,7 @@ class MainActivity : Activity() {
  private val explicitTextures=mutableListOf<Texture>()
  private data class Atlas(val parameter:String,val image:ByteArray,val srgb:Boolean)
  private var pendingAtlas=listOf<Atlas>()
- private fun clearExplicit(){for(t in explicitTextures)viewer.engine.destroyTexture(t);explicitTextures.clear();pendingAtlas=emptyList()}
+ private fun clearExplicit(){skinMaterials.clear();for(t in explicitTextures)viewer.engine.destroyTexture(t);explicitTextures.clear();pendingAtlas=emptyList()}
  // The shared atlas has no semantic material ID. Only refine conservative
  // colour/roughness candidates; do not relabel arbitrary regions as skin/cloth.
  private fun decodedAtlas(a:Atlas,mutable:Boolean=false):android.graphics.Bitmap{
@@ -181,6 +181,7 @@ class MainActivity : Activity() {
  // always retain the original glTF values. No whole-model metal or color override.
  private fun refineRegions(instances:List<MaterialInstance>):String{
   val applied=mutableSetOf<String>()
+  skinMaterials.clear()
   for(mi in instances){
    val label=mi.name?:""
    val normal=when(label){
@@ -190,6 +191,7 @@ class MainActivity : Activity() {
     "Painted_shell_candidate"->.48f
     else->continue
    }
+   if(label=="Skin_candidate")skinMaterials.add(mi)
    if(mi.material.hasParameter("normalScale"))mi.setParameter("normalScale",normal)
    if(mi.material.hasParameter("roughnessFactor")){
     val factor=when(label){"Painted_shell_candidate"->.94f;"Hair_candidate"->.97f;else->1f}
@@ -199,7 +201,18 @@ class MainActivity : Activity() {
    applied.add(label)
   }
   require(applied.size==4){"分区材质名称未完整匹配："+applied.joinToString(",")}
+  applySkinDetail()
   return "独立候选材质 "+applied.size+" 个："+applied.joinToString(",")
+ }
+ // This is a bounded PBR surface adjustment, not subsurface scattering.
+ // The candidate slot alone is adjusted; no base color or metallic override.
+ private fun applySkinDetail(){
+  if(!regionModel||diagnostic)return
+  val t=skinSoftness.coerceIn(0f,1f)
+  for(mi in skinMaterials){
+   if(mi.material.hasParameter("normalScale"))mi.setParameter("normalScale",.55f-.32f*t)
+   if(mi.material.hasParameter("roughnessFactor"))mi.setParameter("roughnessFactor",1f-.08f*(1f-t))
+  }
  }
  private fun fallbackRegion(reason:String):Boolean{
   if(!regionModel)return false
@@ -250,6 +263,8 @@ class MainActivity : Activity() {
  private var cinematic=true
  private var refineAtlas=true
  private var regionModel=false
+ private var skinSoftness=.55f
+ private val skinMaterials=mutableListOf<MaterialInstance>()
  private var qualityLevel=2.0
  private var cinematicGrading:ColorGrading?=null
  private var neutralGrading:ColorGrading?=null
@@ -323,7 +338,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V4.1").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V4.2").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -339,6 +354,7 @@ class MainActivity : Activity() {
      pausedResources=prefs.getBoolean("paused",false)
      cinematic=prefs.getBoolean("cinematic",true)
      refineAtlas=prefs.getBoolean("refineAtlas",true)
+     skinSoftness=prefs.getFloat("skinSoftness",.55f)
      applyStudioLook()
      if(!prefs.getBoolean("baseline36",false)){prefs.edit().remove("params").putBoolean("baseline36",true).putBoolean("paused",true).putString("model","full").apply();pausedResources=true}
      if(!prefs.getBoolean("cinematic39",false)){prefs.edit().putString("model","full").putBoolean("cinematic39",true).apply()}
@@ -378,6 +394,8 @@ class MainActivity : Activity() {
   normal=j.optDouble("normal",.38).toFloat().coerceIn(0f,1f)
   reflectPower=j.optDouble("reflect",.85).toFloat().coerceIn(0f,2f)
   flat=j.optBoolean("flat",false)
+  skinSoftness=j.optDouble("skin",.55).toFloat().coerceIn(0f,1f)
+  applySkinDetail()
   lighting(exp,if(flat)0f else keyPower,if(flat)2f else ambientPower)
  }
  inner class Controls {
@@ -388,7 +406,7 @@ class MainActivity : Activity() {
     try{
      val j=JSONObject(data)
      when(command){
-      "ready"->{js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+")")}
+      "ready"->{js("window.studioSkin&&studioSkin("+skinSoftness+")");js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+")")}
       "pose"->{yaw=j.optDouble("yaw",0.0).toFloat();pitch=j.optDouble("pitch",0.0).toFloat().coerceIn(-85f,85f);zoom=j.optDouble("zoom",1.0).toFloat().coerceIn(.3f,2.5f);panX=j.optDouble("x",0.0).toFloat().coerceIn(-1.5f,1.5f);panY=j.optDouble("y",0.0).toFloat().coerceIn(-1.5f,1.5f);spinning=j.optBoolean("spin",false);applyTransform()}
       "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&(m!=selected||viewer.asset==null)){diagnostic=false;selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
       "diagnose"->{
@@ -402,7 +420,7 @@ class MainActivity : Activity() {
       "cinematic"->{val changed=cinematic!=j.optBoolean("enabled",true);cinematic=j.optBoolean("enabled",true);prefs.edit().putBoolean("cinematic",cinematic).apply();applyStudioLook();js("window.studioLook&&studioLook("+cinematic+")");if(changed&&refineAtlas&&!diagnostic)loadMode(selected)}
       "refineAtlas"->{val next=j.optBoolean("enabled",true);if(next!=refineAtlas){refineAtlas=next;prefs.edit().putBoolean("refineAtlas",next).apply();if(!diagnostic)loadMode(selected)};js("window.studioRefine&&studioRefine("+refineAtlas+")")}
       "params"->applyUiParams(j)
-      "save"->{prefs.edit().putString("params",data).apply();status.text="渲染参数已保存"}
+      "save"->{prefs.edit().putString("params",data).putFloat("skinSoftness",skinSoftness).apply();status.text="渲染参数已保存"}
       "restore"->{js("studioRestore("+JSONObject.quote(prefs.getString("params","")?:"")+")")}
       "compare"->{val p=surface.layoutParams as FrameLayout.LayoutParams;p.leftMargin=if(j.optBoolean("show"))(web.width*.43f).toInt() else 0;surface.layoutParams=p}
       "check"->{pausedResources=false;prefs.edit().putBoolean("paused",false).apply();appUpdates.check(true);sync(manual=true)}
@@ -776,26 +794,28 @@ $('compare').onclick=()=>{compare=!compare;document.body.classList.toggle('compa
 function params(){let p={};for(const n of names){p[n]=Number($(n).value);$(n+'V').value=p[n].toFixed(2)}p.flat=$('light').value==='0';return p}
 function apply(p){for(const n of names)if(Number.isFinite(p[n]))$(n).value=p[n];if(typeof p.flat==='boolean')$('light').value=p.flat?'0':'1';send('params',params())}
 for(const n of names)$(n).oninput=()=>send('params',params());
-for(const n of ['rough','normal']){$(n).disabled=true;$(n).title='保真模式：保留模型原始材质'};$('skin').disabled=true;$('skin').title='独立皮肤着色尚未迁移';$('reflect').disabled=true;$('reflect').title='恢复模式：环境反射与漫反射保持官方 IBL 默认比例';
+for(const n of ['rough','normal']){$(n).disabled=true;$(n).title='保真模式：保留模型原始材质'};$('skin').disabled=true;$('skin').title='独立皮肤候选区微表面柔化，非 SSS';$('skin').parentElement.firstChild.textContent='皮肤细节柔化 ';$('reflect').disabled=true;$('reflect').title='恢复模式：环境反射与漫反射保持官方 IBL 默认比例';
 $('light').options[1].textContent='柔和平光';$('light').onchange=()=>send('params',params());
 $('quality').onchange=()=>send('quality',{value:Number($('quality').value)});
 $('save').onclick=()=>send('save',params());window.studioDefaults=()=>apply({...defaults,flat:false});$('defaults').onclick=studioDefaults;
 window.studioCloud=s=>{try{apply(JSON.parse(s));send('save',params())}catch(e){}};
-window.studioRestore=s=>{try{let p=JSON.parse(s||localStorage.getItem('renderParams')||'{}');apply(p)}catch(e){studioDefaults()}};
+window.studioRestore=s=>{try{let p=JSON.parse(s||"{}");apply(p)}catch(e){studioDefaults()}};
 window.studioStatus=s=>{$('status').textContent=s};
 window.studioModel=m=>{$('model').value=m;$('switchModel').textContent=m==='full'?'切换轻量版':'切换高精度'};
-window.studioLoaded=m=>{studioModel(m);$('msg').style.display='none';$('modelinfo').textContent=m==='full'?'离线高精度模型 · 4K':'离线轻量模型 · 2K'};
+window.studioLoaded=m=>{$('skin').disabled=true;studioModel(m);$('msg').style.display='none';$('modelinfo').textContent=m==='full'?'离线高精度模型 · 4K':'离线轻量模型 · 2K'};
 function change(m){studioModel(m);$('msg').style.display='block';$('msg').textContent='正在加载模型…';send('model',{mode:m})}
 $('model').onchange=()=>change($('model').value);$('switchModel').onclick=()=>change($('model').value==='full'?'mobile':'full');
 $('endpoint').value='https://xinminyu168-spec.github.io/starling-3d-studio/';$('endpoint').readOnly=true;$('check').onclick=()=>send('check');$('rollback').onclick=()=>send('rollback');
 window.studioProgress=p=>{$('msg').style.display='block';$('msg').textContent='正在加载纹理 '+p+'%';$('modelinfo').textContent='纹理加载 '+p+'%'};
 window.studioFailure=s=>{$('msg').style.display='block';$('msg').textContent=s;$('modelinfo').textContent='加载失败'};
 window.studioDiagnostic=on=>{if(on)$('modelinfo').textContent='仅色彩图诊断 · 2K'};
-window.studioRegions=on=>{if(on)$('modelinfo').textContent='高精度 · 4K · 独立材质分区'};
+window.studioRegions=on=>{$('skin').disabled=!on;if(on)$('modelinfo').textContent='高精度 · 4K · 独立材质分区'};
+window.studioSkin=v=>{$('skin').value=v;$('skinV').value=Number(v).toFixed(2)};
 const look=document.createElement("button");look.textContent="影视级 / 保真";look.style.margin="4px";let cine=true;window.studioLook=on=>{cine=on;look.textContent=on?"影视级：开启（点击保真）":"保真：开启（点击影视级）"};look.onclick=()=>send("cinematic",{enabled:!cine});$("check").insertAdjacentElement("afterend",look);
 const polish=document.createElement("button");polish.style.margin="4px";let refine=true;window.studioRefine=on=>{refine=on;polish.textContent=on?"材质精修：开启":"材质精修：关闭"};studioRefine(true);polish.onclick=()=>send("refineAtlas",{enabled:!refine});$("check").insertAdjacentElement("afterend",polish);
+const face=document.createElement('button');face.textContent='面部近景';face.style.margin='4px';face.onclick=()=>{yaw=0;pitch=0;zoom=2.5;x=0;y=-1.24;spin=false;$('spin').textContent='自动旋转';pose();$('panel').style.display='none'};$('check').insertAdjacentElement('afterend',face);
 const diag=document.createElement('button');diag.textContent='纹理诊断';diag.style.margin='4px';diag.onclick=()=>send('diagnose');$('check').insertAdjacentElement('afterend',diag);
-window.studioReady=()=>{send('ready');studioDefaults();send('quality',{value:2})};studioReady();
+window.studioReady=()=>{studioDefaults();send('ready');send('restore');send('quality',{value:2})};studioReady();
 EOF
 
 # Build the same prefiltered environment format used by Filament's Android samples.
