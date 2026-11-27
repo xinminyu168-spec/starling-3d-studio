@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 57
-  versionName '5.5'
+  versionCode 58
+  versionName '5.6'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -534,7 +534,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V5.5").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V5.6").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -1372,7 +1372,9 @@ class AppUpdates(private val activity:Activity) {
   require(info.packageName==activity.packageName && version(info)==v && v>version(current)){"版本或包名不匹配"}
   require(certs(info).isNotEmpty() && certs(info)==certs(current)){"签名不匹配"}
  }
- fun check(manual:Boolean,approved:Long?=null){
+ private data class ApprovedUpdate(val version:Long,val hash:String,val size:Long,val url:String)
+ fun check(manual:Boolean)=check(manual,null)
+ private fun check(manual:Boolean,approved:ApprovedUpdate?){
   if(busy){if(manual)notify("正在检查或下载更新");return}
   busy=true
   if(manual)notify("正在检查程序版本…")
@@ -1383,26 +1385,30 @@ class AppUpdates(private val activity:Activity) {
     val signer=certs(installed()).singleOrNull()?:error("无法识别应用签名")
     if(signer=="065d80ddf51e5a7cbc881900351ee355cdd8aa2447fee0a959d0391ecc02c7ba")require(j.optString("certificateSha256","")==signer){"更新渠道签名不匹配"}
     val v=j.optLong("versionCode",0)
-    if(!j.optBoolean("enabled",false)||v<=version(installed())){handler.post{busy=false;if(manual)notify("暂无可安装的新程序版本")};return@Thread}
+    val current=installed()
+    if(!j.optBoolean("enabled",false)||v<=version(current)){handler.post{busy=false;if(manual)notify("当前版本 "+current.versionName+" · "+(if(j.optBoolean("enabled",false))"已是最新版本" else "更新渠道暂未开放"))};return@Thread}
+    val expected=j.getString("sha256").lowercase();require(expected.matches(Regex("[0-9a-f]{64}")))
+    val size=j.getLong("size");require(size in 1L..900_000_000L)
+    val url=j.getString("url")
+    val parsed=URL(url)
+    val prefix=if(signer=="065d80ddf51e5a7cbc881900351ee355cdd8aa2447fee0a959d0391ecc02c7ba")"starling-new-v" else "starling-v"
+    require(parsed.protocol=="https"&&parsed.host=="raw.githubusercontent.com"&&parsed.port==-1&&parsed.userInfo==null&&parsed.query==null&&parsed.ref==null&&parsed.path=="/xinminyu168-spec/starling-3d-studio/main/updates/"+prefix+v+".apk"){"更新下载地址不匹配"}
+    val candidate=ApprovedUpdate(v,expected,size,url)
     if(approved==null){
      handler.post{
       busy=false
       if(!running||activity.isFinishing||activity.isDestroyed||dialog?.isShowing==true||(!manual&&prompted==v))return@post
       prompted=v
       val name=j.optString("versionName",v.toString())
-      val size=j.optLong("size",0)
       val note=j.optString("note","程序功能与渲染引擎更新").take(300)
       dialog=AlertDialog.Builder(activity).setTitle("发现新版本 "+name)
        .setMessage(note+"\n下载大小："+String.format(java.util.Locale.CHINA,"%.1f MB",size/1000000.0)+"\n点击立即更新后才开始下载。")
-       .setNegativeButton("稍后",null).setPositiveButton("立即更新"){_,_->check(true,v)}.show()
+       .setNegativeButton("稍后",null).setPositiveButton("立即更新"){_,_->check(true,candidate)}.show()
      }
      return@Thread
     }
-    require(v==approved){"云端版本已改变，请重新检查"}
+    require(candidate==approved){"云端安装包信息已改变，请重新检查"}
     StudioAssets.prepare(activity)
-    val expected=j.getString("sha256").lowercase();require(expected.matches(Regex("[0-9a-f]{64}")))
-    val size=j.getLong("size");require(size in 1L..900_000_000L)
-    val url=j.getString("url")
     val dir=File(activity.filesDir,"updates").apply{mkdirs()}
     val out=File(dir,"update-"+v+".apk")
     fun hash(f:File):String{val md=MessageDigest.getInstance("SHA-256");f.inputStream().use{val b=ByteArray(65536);while(true){val n=it.read(b);if(n<0)break;md.update(b,0,n)}};return hex(md.digest())}
