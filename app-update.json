@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "enabled": false,
+  "versionCode": 32,
+  "versionName": "3.1",
+  "url": "",
+  "sha256": "",
+  "size": 0,
+  "note": "No signed program APK published. Resource updates continue via manifest.json."
+}
