@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 59
-  versionName '5.7'
+  versionCode 60
+  versionName '5.8'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -534,7 +534,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V5.7").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V5.8").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -735,15 +735,30 @@ class MainActivity : Activity() {
  }
  private fun portraitPreset(){
   if(loading||exportBusy||diagnostic||!regionModel||viewer.asset==null){
-   Toast.makeText(this,"请先恢复正常高精度分区模型，再启用质感精修",Toast.LENGTH_LONG).show();return
+   Toast.makeText(this,"请先恢复正常高精度分区模型，再启用肖像精修",Toast.LENGTH_LONG).show();return
   }
-  lightProfile=3
-  lighting(exp,if(flat)0f else keyPower,if(flat)2f else ambientPower)
-  js("window.studioLightProfile&&studioLightProfile(3)")
-  val report=enableAdvancedMaterials()
-  syncAdvancedUI()
-  status.text="角色质感精修 · "+report
-  Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()
+  val labels=arrayOf("A · 仅肖像布光（原 PBR）","B · 皮肤散射","C · 头发反射","D · 织物细节","E · 机械清漆","F · 四套高级材质（联合试验）")
+  val masks=intArrayOf(0,1,2,4,8,15)
+  android.app.AlertDialog.Builder(this).setTitle("肖像精修 · 单项对照").setItems(labels){_,i->
+   if(loading||exportBusy||diagnostic||!regionModel||viewer.asset==null)return@setItems
+   maxPresetPending=false;advancedMask=0
+   disableSkinShader();disableHairShader();disableClothShader();disableShellShader()
+   lightProfile=3
+   lighting(exp,if(flat)0f else keyPower,if(flat)2f else ambientPower)
+   js("window.studioLightProfile&&studioLightProfile(3)")
+   val mask=masks[i]
+   val results=mutableListOf<String>()
+   if(mask and 1!=0)results.add(installSkinShader())
+   if(mask and 2!=0)results.add(installHairShader())
+   if(mask and 4!=0)results.add(installClothShader())
+   if(mask and 8!=0)results.add(installShellShader())
+   val actual=(if(sssInstance!=null)1 else 0) or (if(hairInstance!=null)2 else 0) or (if(clothInstance!=null)4 else 0) or (if(shellInstance!=null)8 else 0)
+   syncAdvancedUI()
+   val report=if(actual==mask)labels[i] else labels[i]+" · 部分材质启用失败"
+   modelAudit+="\n肖像对照：请求 "+mask+" · 实际 "+actual+" · "+results.joinToString("；")
+   status.text=report
+   Toast.makeText(this,report,Toast.LENGTH_SHORT).show()
+  }.setNegativeButton("取消",null).show()
  }
  private fun chooseLightProfile(){
   val labels=arrayOf("电影三点布光 · 标准","柔和棚拍 · 提升补光","轮廓造型 · 减弱补光、增强轮廓","角色肖像 · 正面补光、柔和轮廓")
@@ -1581,7 +1596,7 @@ const poreRange=document.createElement('input');poreRange.type='range';poreRange
 window.studioPores=v=>{poreRange.value=v;poreValue.textContent=Number(v).toFixed(2)};poreRange.oninput=()=>{const v=Number(poreRange.value);studioPores(v);send('pores',{value:v})};
 const maxButton=document.createElement('button');maxButton.textContent='最高画质 · 安全 PBR';maxButton.style.margin='4px';maxButton.onclick=()=>send('maximum');$('check').insertAdjacentElement('afterend',maxButton);
 window.studioMaximum=()=>{if(window.studioLightProfile)studioLightProfile(0);studioLook(true);studioRefine(true);studioModel('full');$('quality').value='2';studioDefaults();send('quality',{value:2})};
-const portraitButton=document.createElement('button');portraitButton.textContent='角色质感精修 · V5.7';portraitButton.style.margin='4px';portraitButton.onclick=()=>send('portrait');$('check').insertAdjacentElement('afterend',portraitButton);
+const portraitButton=document.createElement('button');portraitButton.textContent='肖像精修 · 单项对照';portraitButton.style.margin='4px';portraitButton.onclick=()=>send('portrait');$('check').insertAdjacentElement('afterend',portraitButton);
 const lightingButton=document.createElement('button');lightingButton.textContent='灯光校准 · 标准三点布光';lightingButton.style.margin='4px';lightingButton.onclick=()=>send('lightProfile');$('check').insertAdjacentElement('afterend',lightingButton);
 window.studioLightProfile=i=>{lightingButton.textContent='灯光校准 · '+['标准三点布光','柔和棚拍','轮廓造型','角色肖像'][i]};
 const safeButton=document.createElement('button');safeButton.textContent='恢复原始 PBR 材质';safeButton.style.margin='4px';safeButton.onclick=()=>send('safeMaterials');$('check').insertAdjacentElement('afterend',safeButton);
