@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 32
-  versionName '3.1'
+  versionCode 33
+  versionName '3.1.1'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
