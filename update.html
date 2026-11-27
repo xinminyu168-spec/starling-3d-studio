@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>星灵资源发布端</title><script>
+'use strict';
+window.addEventListener('message',async e=>{
+ if(e.source!==parent||e.data?.type!=='starling-check'||typeof e.data.nonce!=='string'||e.data.nonce.length>80)return;
+ const reply={type:'starling-update',nonce:e.data.nonce};let transfers=[];
+ try{
+  const r=await fetch('./manifest.json',{cache:'no-store'});if(!r.ok)throw Error('manifest '+r.status);const d=await r.json();reply.version=d.version;
+  if(d.version!==e.data.current){reply.params=d.params;reply.models={};for(const m of ['full','mobile']){const a=d.models?.[m];if(!a)continue;let u=new URL(a.file,location.href);if(u.origin!==location.origin||u.protocol!=='https:')throw Error('invalid origin');if(!/^[0-9a-f]{64}$/.test(a.sha256)||!Number.isSafeInteger(a.size)||a.size<40||a.size>104857600)throw Error('invalid model metadata');const r=await fetch(u,{cache:'no-store'});if(!r.ok)throw Error('model '+r.status);const b=await r.arrayBuffer();if(b.byteLength!==a.size)throw Error('incorrect length');reply.models[m]={bytes:b,sha256:a.sha256};transfers.push(b);}}
+ }catch(err){reply.error=String(err).slice(0,160);reply.models={};transfers=[];}
+ e.source.postMessage(reply,e.origin==='null'?'*':e.origin,transfers);
+});
+</script>
