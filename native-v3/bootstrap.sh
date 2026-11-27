@@ -24,11 +24,11 @@ android {
  namespace 'com.starling.filament'
  compileSdk 35
  defaultConfig {
-  applicationId 'com.starling.filament'
+  applicationId 'com.xs.character.viewer'
   minSdk 26
-  targetSdk 35
-  versionCode 30
-  versionName '3.0-alpha'
+  targetSdk 32
+  versionCode 31
+  versionName '3.0-integrated'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -44,8 +44,9 @@ cat > app/src/main/AndroidManifest.xml <<'EOF'
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
  <uses-permission android:name="android.permission.INTERNET"/>
  <uses-feature android:glEsVersion="0x00030000" android:required="true"/>
- <application android:label="星灵 3D 原生版" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:usesCleartextTraffic="false" android:largeHeap="true">
-  <activity android:name=".MainActivity" android:exported="true" android:configChanges="orientation|screenSize|keyboardHidden" android:screenOrientation="sensorLandscape">
+ <application android:label="星灵 · 3D 查看器" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:usesCleartextTraffic="false" android:largeHeap="true">
+  <activity android:name="com.starling.filament.MainActivity" android:exported="false" android:configChanges="orientation|screenSize|keyboardHidden" android:screenOrientation="sensorLandscape"/>
+  <activity android:name="com.starling.filament.StudioActivity" android:exported="true" android:configChanges="orientation|screenSize|keyboardHidden">
    <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
   </activity>
  </application>
@@ -94,7 +95,10 @@ class MainActivity : Activity() {
   val root = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(17,19,24)) }
   val top = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
   fun button(label:String, act:()->Unit) { top.addView(Button(this).apply { text=label; setOnClickListener { act() } }) }
-  button("导入高精度 GLB") { val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type="*/*" }; startActivityForResult(i,7) }
+  button("原工作台") { finish() }
+  button("高精度") { loadAsset("native_full.glb") }
+  button("轻量") { loadAsset("mobile.glb") }
+  button("导入 GLB") { val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type="*/*" }; startActivityForResult(i,7) }
   button("同步光照") { sync() }
   button("重置光照") { version=""; lighting(1f,1f,1f) }
   status=TextView(this).apply { text="Filament · 等待本地模型"; setTextColor(Color.WHITE); textSize=13f; setPadding(12,0,12,0) }
@@ -117,7 +121,18 @@ class MainActivity : Activity() {
   addLight(-0.6f,-0.45f,-0.5f,23000f)
   addLight(0.4f,-0.5f,0.7f,28000f)
   val saved=File(filesDir,"character.glb")
-  if(saved.exists()) load(saved)
+  if(saved.exists()) load(saved) else loadAsset("native_full.glb")
+ }
+ private fun loadAsset(name:String) {
+  try {
+   val dst=File(cacheDir,name)
+   if(!dst.exists()) {
+    val temp=File(cacheDir,name+".tmp")
+    assets.open(name).use { input -> temp.outputStream().use { output -> input.copyTo(output) } }
+    require(temp.renameTo(dst))
+   }
+   load(dst)
+  } catch(e:Exception) { status.text="内置模型加载失败："+e.message }
  }
  private fun addLight(x:Float,y:Float,z:Float,power:Float) {
   val id=EntityManager.get().create()
@@ -179,3 +194,46 @@ class MainActivity : Activity() {
 EOF
 # Avoid android.view.View name conflict with Filament View.
 sed -i 's/\bView\./com.google.android.filament.View./g' app/src/main/java/com/starling/filament/MainActivity.kt
+cat > app/src/main/java/com/starling/filament/StudioActivity.kt <<'EOF'
+package com.starling.filament
+import android.app.Activity
+import android.content.Intent
+import android.os.Bundle
+import android.graphics.Color
+import android.view.Gravity
+import android.view.WindowManager
+import android.webkit.WebView
+import android.widget.Button
+import android.widget.FrameLayout
+
+class StudioActivity : Activity() {
+ private lateinit var web: WebView
+ override fun onCreate(savedInstanceState:Bundle?) {
+  super.onCreate(savedInstanceState)
+  window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,WindowManager.LayoutParams.FLAG_FULLSCREEN)
+  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+  val frame=FrameLayout(this)
+  web=WebView(this)
+  web.settings.javaScriptEnabled=true
+  web.settings.domStorageEnabled=true
+  web.settings.allowFileAccessFromFileURLs=true
+  web.settings.allowUniversalAccessFromFileURLs=false
+  frame.addView(web,FrameLayout.LayoutParams(-1,-1))
+  val button=Button(this).apply {
+   text="Filament 原生渲染"
+   textSize=12f
+   setTextColor(Color.WHITE)
+   setBackgroundColor(Color.rgb(30,70,115))
+   setOnClickListener { startActivity(Intent(this@StudioActivity,MainActivity::class.java)) }
+  }
+  val pos=FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM or Gravity.START)
+  pos.setMargins(8,0,0,36)
+  frame.addView(button,pos)
+  setContentView(frame)
+  web.loadUrl("file:///android_asset/viewer.html")
+ }
+ override fun onPause(){web.onPause();super.onPause()}
+ override fun onResume(){super.onResume();web.onResume()}
+ override fun onDestroy(){web.destroy();super.onDestroy()}
+}
+EOF
