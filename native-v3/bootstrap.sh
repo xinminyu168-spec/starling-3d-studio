@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 53
-  versionName '5.1'
+  versionCode 54
+  versionName '5.2'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -109,6 +109,7 @@ class MainActivity : Activity() {
  private var loadStart=0L
  private var lastLoadPercent=-1
  private var diagnostic=false
+ private var uvResult="尚未运行"
  private var uvProbeShader:Material?=null
  private var uvProbeInstance:MaterialInstance?=null
  private val uvProbeBindings=mutableListOf<SkinBinding>()
@@ -533,7 +534,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V5.1").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V5.2").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -648,6 +649,7 @@ class MainActivity : Activity() {
       "materialCompare"->compareMaterials()
       "safeMaterials"->restoreSafeMaterials()
       "uvProbe"->toggleUvProbe()
+      "uvAuto"->runUvComparison()
       "renderAudit"->showRenderAudit()
       "params"->applyUiParams(j)
       "save"->{prefs.edit().putString("params",data).putFloat("skinSoftness",skinSoftness).apply();status.text="渲染参数已保存"}
@@ -774,12 +776,97 @@ class MainActivity : Activity() {
    js("window.studioUvProbe&&studioUvProbe(false)")
   }
  }
+ // Compare two actual GPU renders, same model, camera, atlas, output and unlit shading.
+ // Do not compare background pixels or claim a pass on an empty readback.
+ private fun runUvComparison(){
+  if(!diagnostic||loading||exportBusy||viewer.asset==null){Toast.makeText(this,"请先进入仅色彩图诊断",Toast.LENGTH_LONG).show();return}
+  val vp=viewer.view.viewport
+  if(vp.width<=0||vp.height<=0)return
+  val w=if(vp.width>=vp.height)1024 else (1024.0*vp.width/vp.height).toInt().coerceAtLeast(1)
+  val h=if(vp.height>=vp.width)1024 else (1024.0*vp.height/vp.width).toInt().coerceAtLeast(1)
+  val engine=viewer.engine
+  var color:Texture?=null;var depth:Texture?=null;var target:RenderTarget?=null;var view:com.google.android.filament.View?=null
+  var done=false
+  val a=ByteBuffer.allocateDirect(w*h*4);val b=ByteBuffer.allocateDirect(w*h*4)
+  fun finish(report:String){
+   if(done)return
+   done=true
+   if(uvProbeInstance!=null)toggleUvProbe()
+   view?.let{it.setRenderTarget(null);it.setScene(null);it.setCamera(null);engine.destroyView(it)}
+   target?.let{engine.destroyRenderTarget(it)};depth?.let{engine.destroyTexture(it)};color?.let{engine.destroyTexture(it)}
+   exportBusy=false;uvResult=report
+   js("window.studioExportLock&&studioExportLock(false)")
+   if(!isDestroyed){status.text=report;android.app.AlertDialog.Builder(this).setTitle("UV 自动回归检测").setMessage(report).setPositiveButton("关闭",null).show()}
+  }
+  exportBusy=true
+  if(uvProbeInstance!=null)toggleUvProbe()
+  js("window.studioExportLock&&studioExportLock(true)")
+  status.text="UV 自动检测：正在读取 A/B 两帧"
+  try{
+   val c=Texture.Builder().width(w).height(h).levels(1).sampler(Texture.Sampler.SAMPLER_2D).format(Texture.InternalFormat.RGBA8).usage(Texture.Usage.COLOR_ATTACHMENT or Texture.Usage.SAMPLEABLE or Texture.Usage.BLIT_SRC).build(engine)
+   color=c
+   val d=Texture.Builder().width(w).height(h).levels(1).sampler(Texture.Sampler.SAMPLER_2D).format(Texture.InternalFormat.DEPTH24).usage(Texture.Usage.DEPTH_ATTACHMENT).build(engine)
+   depth=d
+   val rt=RenderTarget.Builder().texture(RenderTarget.AttachmentPoint.COLOR,c).texture(RenderTarget.AttachmentPoint.DEPTH,d).build(engine)
+   target=rt
+   val off=engine.createView();view=off
+   off.setScene(viewer.scene);off.setCamera(viewer.camera);off.setRenderTarget(rt);off.setViewport(Viewport(0,0,w,h))
+   off.setPostProcessingEnabled(false);off.setShadowingEnabled(false)
+   off.setDynamicResolutionOptions(com.google.android.filament.View.DynamicResolutionOptions().apply{enabled=false})
+   off.setMultiSampleAntiAliasingOptions(com.google.android.filament.View.MultiSampleAntiAliasingOptions().apply{enabled=false;sampleCount=1})
+   val handler=android.os.Handler(mainLooper)
+   fun capture(data:ByteBuffer,callback:Runnable){
+    viewer.renderer.renderStandaloneView(off)
+    viewer.renderer.readPixels(rt,0,0,w,h,Texture.PixelBufferDescriptor(data,Texture.Format.RGBA,Texture.Type.UBYTE,1,0,0,0,handler,callback))
+    engine.flush()
+   }
+   capture(a,Runnable{
+    if(isDestroyed||!active){finish("检测中断：APP 已离开前台");return@Runnable}
+    try{
+     toggleUvProbe()
+     require(uvProbeInstance!=null){"自定义采样器未启用"}
+     capture(b,Runnable{
+      if(isDestroyed||!active){finish("检测中断：APP 已离开前台");return@Runnable}
+      try{
+       var foreground=0;var visibleA=0;var visibleB=0;var bad=0;var total=0L
+       for(i in 0 until w*h){
+        val k=i*4
+        val ar=a.get(k).toInt() and 255;val ag=a.get(k+1).toInt() and 255;val ab=a.get(k+2).toInt() and 255
+        val br=b.get(k).toInt() and 255;val bg=b.get(k+1).toInt() and 255;val bb=b.get(k+2).toInt() and 255
+        val av=maxOf(ar,ag,ab)>8;val bv=maxOf(br,bg,bb)>8
+        if(av)visibleA++;if(bv)visibleB++
+        if(!av&&!bv)continue
+        foreground++
+        val dr=kotlin.math.abs(ar-br);val dg=kotlin.math.abs(ag-bg);val db=kotlin.math.abs(ab-bb)
+        total+=dr+dg+db
+        if(maxOf(dr,dg,db)>12)bad++
+       }
+       val minVisible=maxOf(256,w*h/100)
+       require(visibleA>=minVisible&&visibleB>=minVisible){"有效模型像素不足：请缩放至画面中央后重试"}
+       val mean=total.toDouble()/(foreground*3.0)
+       val ratio=bad.toDouble()/foreground
+       val passed=mean<=2.0&&ratio<=.01
+       val fmt=java.util.Locale.US
+       val report=(if(passed)"UV A/B 一致性通过" else "UV A/B 存在明显差异")+"\n"+
+        "分辨率："+w+"×"+h+"；参与比较像素："+foreground+"\n"+
+        "平均通道绝对差："+String.format(fmt,"%.3f",mean)+"/255\n"+
+        "差异超过 12 的像素："+String.format(fmt,"%.2f%%",ratio*100)+"\n"+
+        "通过阈值：平均差≤2，明显差异≤1%。\n"+
+        "仅验证当前视角下原 glTF 与修正采样器一致性，不等于全部材质或全部 UV 已验收。\n已恢复 A 原材质。"
+       finish(report)
+      }catch(e:Exception){finish("检测无法完成："+e.message)}
+     })
+    }catch(e:Exception){finish("检测无法完成："+e.message)}
+   })
+  }catch(e:Exception){finish("检测无法完成："+e.message)}
+ }
  private fun showRenderAudit(){
   val vp=viewer.view.viewport
   val n=listOf(sssInstance,hairInstance,clothInstance,shellInstance).count{it!=null}
   val report="实时渲染尺寸："+vp.width+"×"+vp.height+"\n"+
    "模型："+selected+"；独立分区："+regionModel+"\n"+
    "高级材质："+n+"/4；动态分辨率：关闭\n"+
+   "最近 UV 检测："+uvResult+"\n"+
    "四套高级材质已统一 glTF UV 方向（flipUV=false），需逐项真机验证。眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
@@ -1383,7 +1470,7 @@ $('model').onchange=()=>change($('model').value);$('switchModel').onclick=()=>ch
 $('endpoint').value='https://xinminyu168-spec.github.io/starling-3d-studio/';$('endpoint').readOnly=true;$('check').onclick=()=>send('check');$('rollback').onclick=()=>send('rollback');
 window.studioProgress=p=>{$('msg').style.display='block';$('msg').textContent='正在加载纹理 '+p+'%';$('modelinfo').textContent='纹理加载 '+p+'%'};
 window.studioFailure=s=>{$('msg').style.display='block';$('msg').textContent=s;$('modelinfo').textContent='加载失败'};
-window.studioDiagnostic=on=>{uvButton.disabled=!on;if(on)$('modelinfo').textContent='仅色彩图诊断 · 原始 UV';studioUvProbe(false)};
+window.studioDiagnostic=on=>{uvAutoButton.disabled=!on;uvButton.disabled=!on;if(on)$('modelinfo').textContent='仅色彩图诊断 · 原始 UV';studioUvProbe(false)};
 window.studioRegions=on=>{$('skin').disabled=!on;sssButton.disabled=!on;hairButton.disabled=!on;shellButton.disabled=!on;clothButton.disabled=!on;if(on)$('modelinfo').textContent='高精度 · 4K · 独立材质分区'};
 window.studioSkin=v=>{$('skin').value=v;$('skinV').value=Number(v).toFixed(2)};
 const look=document.createElement("button");look.textContent="影视级 / 保真";look.style.margin="4px";let cine=true;window.studioLook=on=>{cine=on;look.textContent=on?"影视级：开启（点击保真）":"保真：开启（点击影视级）"};look.onclick=()=>send("cinematic",{enabled:!cine});$("check").insertAdjacentElement("afterend",look);
@@ -1408,6 +1495,7 @@ const exportLock=document.createElement('div');exportLock.style.cssText='display
 window.studioExportLock=on=>{exportLock.style.display=on?'flex':'none';pointers.clear()};
 const exportButton=document.createElement('button');exportButton.textContent='超高清渲染输出';exportButton.style.margin='4px';exportButton.onclick=()=>send('export');$('check').insertAdjacentElement('afterend',exportButton);
 const uvButton=document.createElement('button');uvButton.style.margin='4px';uvButton.disabled=true;window.studioUvProbe=on=>{uvButton.textContent=on?'UV 对照 B · 点击回到 A':'UV 对照 A · 点击切换 B'};studioUvProbe(false);uvButton.onclick=()=>send('uvProbe');$('check').insertAdjacentElement('afterend',uvButton);
+const uvAutoButton=document.createElement('button');uvAutoButton.textContent='自动 UV 一致性检测';uvAutoButton.style.margin='4px';uvAutoButton.disabled=true;uvAutoButton.onclick=()=>send('uvAuto');$('check').insertAdjacentElement('afterend',uvAutoButton);
 const diag=document.createElement('button');diag.textContent='纹理诊断';diag.style.margin='4px';diag.onclick=()=>send('diagnose');$('check').insertAdjacentElement('afterend',diag);
 window.studioReady=()=>{studioDefaults();send('ready');send('restore');send('quality',{value:2})};studioReady();
 EOF
