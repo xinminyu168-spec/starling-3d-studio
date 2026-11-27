@@ -1,13 +1,13 @@
 {
-  "version": "2.0-studio-1",
+  "version": "2.0-studio-2",
   "params": {
-    "exposure": 1.04,
-    "key": 1,
-    "ambient": 1,
-    "rough": 1.13,
-    "normal": 0.38,
-    "skin": 0.55,
-    "reflect": 0.85
+    "exposure": 0.94,
+    "key": 0.88,
+    "ambient": 0.86,
+    "rough": 1.14,
+    "normal": 0.32,
+    "skin": 0.72,
+    "reflect": 0.76
   },
   "models": {}
 }
