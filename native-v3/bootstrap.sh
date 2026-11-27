@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 56
-  versionName '5.4'
+  versionCode 57
+  versionName '5.5'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -534,7 +534,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V5.4").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V5.5").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -1345,7 +1345,13 @@ class AppUpdates(private val activity:Activity) {
   return (u.openConnection() as HttpsURLConnection).apply{connectTimeout=15000;readTimeout=30000;instanceFollowRedirects=false;useCaches=false}
  }
  private fun manifest():JSONObject{
-  val c=connect(base+"app-update.json?t="+System.currentTimeMillis())
+  val signer=certs(installed()).singleOrNull()?:error("无法识别应用签名")
+  val name=when(signer){
+   "065d80ddf51e5a7cbc881900351ee355cdd8aa2447fee0a959d0391ecc02c7ba"->"app-update-v2.json"
+   "393da066780f599c8151cbf70a564b72ff3e60f0bcd05aa38fa52f74dd60efe2"->"app-update.json"
+   else->error("此安装签名没有正式更新渠道")
+  }
+  val c=connect(base+name+"?t="+System.currentTimeMillis())
   try{require(c.responseCode==200);return c.inputStream.use{ val out=java.io.ByteArrayOutputStream();val b=ByteArray(4096);while(true){val n=it.read(b);if(n<0)break;require(out.size()+n<=32768);out.write(b,0,n)};JSONObject(out.toString("UTF-8")) }}
   finally{c.disconnect()}
  }
@@ -1373,6 +1379,9 @@ class AppUpdates(private val activity:Activity) {
   Thread{
    try{
     val j=manifest()
+    require(j.optInt("schema",0)==1){"不支持的更新清单"}
+    val signer=certs(installed()).singleOrNull()?:error("无法识别应用签名")
+    if(signer=="065d80ddf51e5a7cbc881900351ee355cdd8aa2447fee0a959d0391ecc02c7ba")require(j.optString("certificateSha256","")==signer){"更新渠道签名不匹配"}
     val v=j.optLong("versionCode",0)
     if(!j.optBoolean("enabled",false)||v<=version(installed())){handler.post{busy=false;if(manual)notify("暂无可安装的新程序版本")};return@Thread}
     if(approved==null){
