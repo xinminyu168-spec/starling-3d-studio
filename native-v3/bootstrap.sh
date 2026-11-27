@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 37
-  versionName '3.5'
+  versionCode 38
+  versionName '3.6'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -160,7 +160,7 @@ class MainActivity : Activity() {
    engine.destroyIndirectLight(previous)
   }catch(e:Exception){status.text="HDR 环境载入失败，使用基础环境光"}
   viewer.scene.skybox=Skybox.Builder().color(0.017f,0.02f,0.027f,1f).build(engine)
-  viewer.view.ambientOcclusion=com.google.android.filament.View.AmbientOcclusion.SSAO
+  viewer.view.ambientOcclusion=com.google.android.filament.View.AmbientOcclusion.NONE
   viewer.view.antiAliasing=com.google.android.filament.View.AntiAliasing.FXAA
   viewer.view.renderQuality=viewer.view.renderQuality.apply { hdrColorBuffer=com.google.android.filament.View.QualityLevel.HIGH }
   viewer.view.dynamicResolutionOptions=viewer.view.dynamicResolutionOptions.apply { enabled=false }
@@ -178,7 +178,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V3.5").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V3.6").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -192,9 +192,11 @@ class MainActivity : Activity() {
     if(!isDestroyed){
      initialized=true
      pausedResources=prefs.getBoolean("paused",false)
+     if(!prefs.getBoolean("baseline36",false)){prefs.edit().remove("params").putBoolean("baseline36",true).putBoolean("paused",true).putString("model","full").apply();pausedResources=true}
      selected=prefs.getString("model","full")?:"full"
      if(selected!="mobile")selected="full"
      web.loadUrl("https://appassets.androidplatform.net/studio/viewer.html")
+     lighting(1.04f,1f,1f)
      loadMode(selected)
      if(active){appUpdates.start();if(!pausedResources)sync()}
     }
@@ -219,47 +221,6 @@ class MainActivity : Activity() {
   // Keep Filament's calibrated SH and prefiltered reflections together.
   ibl.intensity=22000f*a.coerceIn(.25f,2f)
  }
- private fun applyMaterial(){
-  val asset=viewer.asset?:return
-  val rm=viewer.engine.renderableManager
-  for(entity in asset.entities){
-   val inst=rm.getInstance(entity);if(inst==0)continue
-   for(i in 0 until rm.getPrimitiveCount(inst)){
-    val mat=rm.getMaterialInstanceAt(inst,i)
-    val name=mat.name.lowercase()
-    val r=when{ "skin" in name->.74f; "fabric" in name->.84f; "hair" in name->.70f; "shell" in name->.52f;else->.74f}
-    val n=when{"skin" in name->.15f; "fabric" in name->.30f; "hair" in name->.24f;else->.23f}
-    if(mat.material.hasParameter("roughnessFactor"))mat.setParameter("roughnessFactor",(r*rough).coerceIn(.4f,1f))
-    if(mat.material.hasParameter("normalScale"))mat.setParameter("normalScale",(n*normal/.38f).coerceIn(0f,.45f))
-    // Shared and unidentified slots are always dielectric, never solid metal.
-    if(mat.material.hasParameter("metallicFactor"))mat.setParameter("metallicFactor",0f)
-   }
-  }
- }
- // Build a temporary recovery material description without modifying any source asset,
- // geometry, UVs, or base-color image. Use a stable dielectric baseline until verified.
- private fun recoveryGlb(source:ByteBuffer):ByteBuffer{
-  source.order(ByteOrder.LITTLE_ENDIAN)
-  val n=source.getInt(12)
-  require(n in 2..4_000_000 && n%4==0 && 20+n+8<=source.limit())
-  require(source.getInt(16)==0x4e4f534a)
-  val bytes=ByteArray(n);source.position(20);source.get(bytes)
-  val doc=JSONObject(String(bytes,Charsets.UTF_8).trim())
-  val materials=doc.optJSONArray("materials")
-  if(materials!=null)for(i in 0 until materials.length()){
-   val m=materials.getJSONObject(i)
-   val p=m.optJSONObject("pbrMetallicRoughness")?:JSONObject().also{m.put("pbrMetallicRoughness",it)}
-   p.put("metallicFactor",0.0);p.put("roughnessFactor",.74)
-   p.remove("metallicRoughnessTexture")
-   m.optJSONObject("normalTexture")?.put("scale",.18)
-  }
-  val json=doc.toString().toByteArray(Charsets.UTF_8)
-  val padded=(json.size+3)/4*4
-  source.position(20+n)
-  val out=ByteBuffer.allocateDirect(20+padded+source.remaining()).order(ByteOrder.LITTLE_ENDIAN)
-  out.putInt(0x46546c67);out.putInt(2);out.putInt(out.capacity());out.putInt(padded);out.putInt(0x4e4f534a)
-  out.put(json);repeat(padded-json.size){out.put(32.toByte())};out.put(source);out.flip();return out
- }
  private fun applyUiParams(j:JSONObject){
   exp=j.optDouble("exposure",1.04).toFloat().coerceIn(.55f,1.7f)
   keyPower=j.optDouble("key",1.0).toFloat().coerceIn(0f,2f)
@@ -269,7 +230,6 @@ class MainActivity : Activity() {
   reflectPower=j.optDouble("reflect",.85).toFloat().coerceIn(0f,2f)
   flat=j.optBoolean("flat",false)
   lighting(exp,if(flat)0f else keyPower,if(flat)2f else ambientPower)
-  applyMaterial()
  }
  inner class Controls {
   @android.webkit.JavascriptInterface fun send(command:String,data:String){
@@ -279,10 +239,10 @@ class MainActivity : Activity() {
     try{
      val j=JSONObject(data)
      when(command){
-      "ready"->{js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");}
+      "ready"->{js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+")")}
       "pose"->{yaw=j.optDouble("yaw",0.0).toFloat();pitch=j.optDouble("pitch",0.0).toFloat().coerceIn(-85f,85f);zoom=j.optDouble("zoom",1.0).toFloat().coerceIn(.3f,2.5f);panX=j.optDouble("x",0.0).toFloat().coerceIn(-1.5f,1.5f);panY=j.optDouble("y",0.0).toFloat().coerceIn(-1.5f,1.5f);spinning=j.optBoolean("spin",false);applyTransform()}
       "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&m!=selected){selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
-      "quality"->{val q=j.optDouble("value",2.0);viewer.view.multiSampleAntiAliasingOptions=viewer.view.multiSampleAntiAliasingOptions.apply{enabled=q>1;sampleCount=if(q>=2)4 else 2};viewer.view.ambientOcclusion=if(q>1)com.google.android.filament.View.AmbientOcclusion.SSAO else com.google.android.filament.View.AmbientOcclusion.NONE}
+      "quality"->{val q=j.optDouble("value",2.0);viewer.view.multiSampleAntiAliasingOptions=viewer.view.multiSampleAntiAliasingOptions.apply{enabled=q>1;sampleCount=if(q>=2)4 else 2};viewer.view.ambientOcclusion=com.google.android.filament.View.AmbientOcclusion.NONE}
       "params"->applyUiParams(j)
       "save"->{prefs.edit().putString("params",data).apply();status.text="渲染参数已保存"}
       "restore"->{js("studioRestore("+JSONObject.quote(prefs.getString("params","")?:"")+")")}
@@ -296,8 +256,9 @@ class MainActivity : Activity() {
  }
  private fun loadMode(mode:String) {
   val f=File(filesDir,"model-"+mode+".glb")
-  if(f.exists() && load(f))return
-  loadAsset(if(mode=="full")"native_full.glb" else "mobile.glb")
+  // Recovery uses only the verified bundled source; no cached overrides.
+  
+  loadAsset(if(mode=="full")"full.glb" else "mobile.glb")
  }
  private fun loadAsset(name:String) {
   try {
@@ -322,7 +283,7 @@ class MainActivity : Activity() {
    val b=ByteBuffer.allocateDirect(n.toInt()).order(ByteOrder.LITTLE_ENDIAN)
    f.inputStream().channel.use { ch -> while(b.hasRemaining()) { if(ch.read(b)<0) error("文件不完整") } }
    b.flip(); require(b.getInt(0)==0x46546c67); require(b.getInt(4)==2); require(b.getInt(8)==n.toInt())
-   viewer.loadModelGlb(recoveryGlb(b)); require(viewer.asset!=null){"Filament 无法解析模型"}; viewer.transformToUnitCube(); val tm=viewer.engine.transformManager; baseTransform=tm.getTransform(tm.getInstance(viewer.asset!!.root),FloatArray(16)); applyTransform();applyMaterial();status.text="模型已载入";js("studioLoaded("+JSONObject.quote(selected)+")");return true
+   viewer.loadModelGlb(b); require(viewer.asset!=null){"Filament 无法解析模型"}; viewer.transformToUnitCube(); val tm=viewer.engine.transformManager; baseTransform=tm.getTransform(tm.getInstance(viewer.asset!!.root),FloatArray(16)); applyTransform();status.text="模型已载入";js("studioLoaded("+JSONObject.quote(selected)+")");return true
   } catch(e:Exception) { status.text="加载失败："+e.message; return false }
  }
  override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
@@ -344,72 +305,7 @@ class MainActivity : Activity() {
   }.start()
  }
  private fun sync(approved:String?=null,manual:Boolean=false) {
-  if(!initialized||checking) return
-  checking=true
-  Thread {
-   try {
-    val c=URL("https://xinminyu168-spec.github.io/starling-3d-studio/manifest.json").openConnection() as HttpsURLConnection
-    c.connectTimeout=8000; c.readTimeout=8000; c.useCaches=false; c.instanceFollowRedirects=false
-    val text=try { require(c.responseCode==200); c.inputStream.use { input -> val out=java.io.ByteArrayOutputStream();val buf=ByteArray(4096);while(true){val n=input.read(buf);if(n<0)break;require(out.size()+n<=32768);out.write(buf,0,n)};out.toString("UTF-8") } } finally { c.disconnect() }
-    val j=JSONObject(text); val v=j.getString("version"); val p=j.getJSONObject("params")
-    val e=p.optDouble("exposure",1.0).coerceIn(0.5,1.7).toFloat()
-    val k=p.optDouble("key",1.0).coerceIn(0.0,2.0).toFloat()
-    val a=p.optDouble("ambient",1.0).coerceIn(0.0,2.0).toFloat()
-    if(approved==null){
-     val current=getSharedPreferences("native_resource_updates",0).getString("appliedVersion","")
-     runOnUiThread{
-      checking=false
-      if(!active||isDestroyed)return@runOnUiThread
-      if(v==current){if(manual)android.widget.Toast.makeText(this,"已是最新资源",0).show();return@runOnUiThread}
-      if(resourceDialog?.isShowing==true||(!manual&&resourcePrompted==v))return@runOnUiThread
-      resourcePrompted=v
-      resourceDialog=android.app.AlertDialog.Builder(this).setTitle("发现资源更新 "+v).setMessage(j.optString("note","模型、贴图或渲染参数更新。确认后才下载并应用。").take(300)).setNegativeButton("稍后",null).setPositiveButton("立即更新"){_,_->sync(v,true)}.show()
-     }
-     return@Thread
-    }
-    require(v==approved){"云端版本已改变，请重新检查"}
-    val downloaded=mutableMapOf<String,File>()
-    val models=j.optJSONObject("models")
-    val prefs=getSharedPreferences("native_resource_updates",0)
-    for(mode in listOf("full","mobile")){
-     val spec=models?.optJSONObject(mode)?:continue
-     val hash=spec.getString("sha256").lowercase()
-     require(hash.matches(Regex("[0-9a-f]{64}")))
-     if(prefs.getString(mode,"")==hash && File(filesDir,"model-"+mode+".glb").exists())continue
-     val path=spec.getString("file")
-     require(path.matches(Regex("[A-Za-z0-9_/.-]+"))&&!path.startsWith("/")&&!path.split("/").contains("..")&&path.endsWith(".glb"))
-     val length=spec.getLong("size");require(length in 20L..150_000_000L)
-     require(filesDir.usableSpace>length+20_000_000L)
-     val tmp=File(filesDir,"pending-"+mode+".glb")
-     val conn=URL("https://xinminyu168-spec.github.io/starling-3d-studio/"+path).openConnection() as HttpsURLConnection
-     conn.connectTimeout=10000;conn.readTimeout=30000;conn.instanceFollowRedirects=false;conn.useCaches=false
-     try{
-      require(conn.responseCode==200)
-      val md=java.security.MessageDigest.getInstance("SHA-256");var total=0L
-      conn.inputStream.use{input->tmp.outputStream().use{output->val b=ByteArray(65536);while(true){val n=input.read(b);if(n<0)break;total+=n;require(total<=length);output.write(b,0,n);md.update(b,0,n)}}}
-      require(total==length&&md.digest().joinToString(""){"%02x".format(it)}==hash)
-      java.io.RandomAccessFile(tmp,"r").use{r->require(Integer.reverseBytes(r.readInt())==0x46546c67);require(Integer.reverseBytes(r.readInt())==2);require(Integer.reverseBytes(r.readInt()).toLong()==r.length())}
-      downloaded[mode]=tmp
-     }catch(e:Exception){tmp.delete();throw e}finally{conn.disconnect()}
-    }
-    runOnUiThread {
-     checking=false
-     if(isDestroyed){downloaded.values.forEach{it.delete()};return@runOnUiThread}
-     var allOk=true
-     if(version!=v){applyUiParams(p);js("studioCloud("+JSONObject.quote(p.toString())+")");prefs.edit().putString("params",p.toString()).apply();version=v;status.text="已同步光照："+v}
-     for((mode,tmp) in downloaded){
-      val dst=File(filesDir,"model-"+mode+".glb");val backup=File(filesDir,"previous-"+mode+".glb")
-      if(backup.exists())backup.delete()
-      if(dst.exists()&&!dst.renameTo(backup)){allOk=false;tmp.delete();continue}
-      val moved=tmp.renameTo(dst)
-      val ok=moved&&(selected!=mode||load(dst))
-      if(ok){prefs.edit().putString(mode,models!!.getJSONObject(mode).getString("sha256").lowercase()).apply();backup.delete();status.text="已同步模型："+v}
-      else{allOk=false;dst.delete();if(backup.exists())backup.renameTo(dst);tmp.delete();if(selected==mode)loadMode(mode)}
-     }
-     if(allOk)prefs.edit().putString("appliedVersion",v).apply() else status.text="部分资源更新失败，已保留旧模型"
-    }
-   } catch(e:Exception) { runOnUiThread { checking=false;if(manual)status.text="资源更新失败："+e.message } }
-  }.start()
+  if(manual)status.text="保真恢复版：资源更新暂缓，程序更新正常"
  }
  override fun onResume() { super.onResume(); active=true; frames.postFrameCallback(ticker); if(initialized){if(!pausedResources)sync();appUpdates.start()} }
  override fun onPause() { active=false; frames.removeFrameCallback(ticker); appUpdates.stop(); super.onPause() }
@@ -607,7 +503,7 @@ $('compare').onclick=()=>{compare=!compare;document.body.classList.toggle('compa
 function params(){let p={};for(const n of names){p[n]=Number($(n).value);$(n+'V').value=p[n].toFixed(2)}p.flat=$('light').value==='0';return p}
 function apply(p){for(const n of names)if(Number.isFinite(p[n]))$(n).value=p[n];if(typeof p.flat==='boolean')$('light').value=p.flat?'0':'1';send('params',params())}
 for(const n of names)$(n).oninput=()=>send('params',params());
-$('skin').disabled=true;$('skin').title='独立皮肤着色尚未迁移';$('reflect').disabled=true;$('reflect').title='恢复模式：环境反射与漫反射保持官方 IBL 默认比例';
+for(const n of ['rough','normal']){$(n).disabled=true;$(n).title='保真模式：保留模型原始材质'};$('skin').disabled=true;$('skin').title='独立皮肤着色尚未迁移';$('reflect').disabled=true;$('reflect').title='恢复模式：环境反射与漫反射保持官方 IBL 默认比例';
 $('light').options[1].textContent='柔和平光';$('light').onchange=()=>send('params',params());
 $('quality').onchange=()=>send('quality',{value:Number($('quality').value)});
 $('save').onclick=()=>send('save',params());window.studioDefaults=()=>apply({...defaults,flat:false});$('defaults').onclick=studioDefaults;
@@ -619,7 +515,7 @@ window.studioLoaded=m=>{studioModel(m);$('msg').style.display='none';$('modelinf
 function change(m){studioModel(m);$('msg').style.display='block';$('msg').textContent='正在加载模型…';send('model',{mode:m})}
 $('model').onchange=()=>change($('model').value);$('switchModel').onclick=()=>change($('model').value==='full'?'mobile':'full');
 $('endpoint').value='https://xinminyu168-spec.github.io/starling-3d-studio/';$('endpoint').readOnly=true;$('check').onclick=()=>send('check');$('rollback').onclick=()=>send('rollback');
-window.studioReady=()=>{send('ready');send('restore');send('quality',{value:2})};studioReady();$('msg').style.display='none';
+window.studioReady=()=>{send('ready');studioDefaults();send('quality',{value:2})};studioReady();$('msg').style.display='none';
 EOF
 
 # Build the same prefiltered environment format used by Filament's Android samples.
