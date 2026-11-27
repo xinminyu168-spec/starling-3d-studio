@@ -1,0 +1,57 @@
+name: Stage new-signature migration APK
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: starling-migration-stage
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Starling-Filament-3.0-alpha
+          run-id: '46056376495'
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/starling-build
+      - name: Sign staging APK with new owner-controlled key
+        env:
+          SIGN_KEY: ${{ secrets.STARLING_MIGRATION_KEY_PK8_B64 }}
+          SIGN_CERT: ${{ secrets.STARLING_MIGRATION_CERT_DER_B64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$SIGN_KEY" && test -n "$SIGN_CERT"
+          keydir="$(mktemp -d)"
+          trap 'rm -rf "$keydir"' EXIT
+          printf '%s' "$SIGN_KEY" | base64 -d > "$keydir/key.pk8"
+          printf '%s' "$SIGN_CERT" | base64 -d > "$keydir/cert.der"
+          fingerprint="$(sha256sum "$keydir/cert.der" | cut -d' ' -f1)"
+          sdk="${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools/35.0.0"
+          mkdir -p "$RUNNER_TEMP/staged"
+          out="$RUNNER_TEMP/staged/Starling-V53-migration.apk"
+          "$sdk/apksigner" sign --key "$keydir/key.pk8" --cert "$keydir/cert.der" --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false --out "$out" "$RUNNER_TEMP/starling-build/app-debug.apk"
+          "$sdk/apksigner" verify --verbose --print-certs "$out" > "$RUNNER_TEMP/cert.txt"
+          grep -Fx "Signer #1 certificate SHA-256 digest: $fingerprint" "$RUNNER_TEMP/cert.txt"
+          "$sdk/zipalign" -c -P 16 4 "$out"
+          "$sdk/aapt" dump badging "$out" > "$RUNNER_TEMP/badging.txt"
+          grep -F "package: name='com.xs.character.viewer' versionCode='55' versionName='5.3'" "$RUNNER_TEMP/badging.txt"
+          python - "$out" <<'PY'
+          import sys,zipfile
+          with zipfile.ZipFile(sys.argv[1]) as z:
+              assert z.testzip() is None
+              assert len([x for x in z.namelist() if x.endswith('.filamat')]) == 5
+          PY
+          printf '%s\n' "$fingerprint" > "$RUNNER_TEMP/staged/CERT-SHA256.txt"
+          (cd "$RUNNER_TEMP/staged" && sha256sum Starling-V53-migration.apk > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Starling-V53-migration-staged
+          path: ${{ runner.temp }}/staged/
+          if-no-files-found: error
+          retention-days: 14
