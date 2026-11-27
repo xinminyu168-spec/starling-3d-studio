@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 52
-  versionName '5.0'
+  versionCode 53
+  versionName '5.1'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -109,6 +109,9 @@ class MainActivity : Activity() {
  private var loadStart=0L
  private var lastLoadPercent=-1
  private var diagnostic=false
+ private var uvProbeShader:Material?=null
+ private var uvProbeInstance:MaterialInstance?=null
+ private val uvProbeBindings=mutableListOf<SkinBinding>()
  private var modelAudit=""
  private val explicitTextures=mutableListOf<Texture>()
  private val boundAtlas=mutableMapOf<String,Texture>()
@@ -127,7 +130,7 @@ class MainActivity : Activity() {
  private val skinBindings=mutableListOf<SkinBinding>()
  private data class Atlas(val parameter:String,val image:ByteArray,val srgb:Boolean)
  private var pendingAtlas=listOf<Atlas>()
- private fun clearExplicit(){shellBindings.clear();shellInstance?.let{viewer.engine.destroyMaterialInstance(it)};shellInstance=null;clothBindings.clear();clothInstance?.let{viewer.engine.destroyMaterialInstance(it)};clothInstance=null;hairBindings.clear();hairInstance?.let{viewer.engine.destroyMaterialInstance(it)};hairInstance=null;skinMaterials.clear();skinBindings.clear();sssInstance?.let{viewer.engine.destroyMaterialInstance(it)};sssInstance=null;boundAtlas.clear();for(t in explicitTextures)viewer.engine.destroyTexture(t);explicitTextures.clear();pendingAtlas=emptyList()}
+ private fun clearExplicit(){uvProbeBindings.clear();uvProbeInstance?.let{viewer.engine.destroyMaterialInstance(it)};uvProbeInstance=null;shellBindings.clear();shellInstance?.let{viewer.engine.destroyMaterialInstance(it)};shellInstance=null;clothBindings.clear();clothInstance?.let{viewer.engine.destroyMaterialInstance(it)};clothInstance=null;hairBindings.clear();hairInstance?.let{viewer.engine.destroyMaterialInstance(it)};hairInstance=null;skinMaterials.clear();skinBindings.clear();sssInstance?.let{viewer.engine.destroyMaterialInstance(it)};sssInstance=null;boundAtlas.clear();for(t in explicitTextures)viewer.engine.destroyTexture(t);explicitTextures.clear();pendingAtlas=emptyList()}
  // The shared atlas has no semantic material ID. Only refine conservative
  // colour/roughness candidates; do not relabel arbitrary regions as skin/cloth.
  private fun decodedAtlas(a:Atlas,mutable:Boolean=false):android.graphics.Bitmap{
@@ -530,7 +533,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V5.0").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V5.1").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -605,8 +608,9 @@ class MainActivity : Activity() {
       "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&(m!=selected||viewer.asset==null)){diagnostic=false;selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
       "diagnose"->{
        android.app.AlertDialog.Builder(this@MainActivity).setTitle("纹理加载诊断")
-        .setMessage("引擎：Filament 1.56.0\n"+modelAudit+"\n加载进度："+lastLoadPercent.coerceAtLeast(0)+"%\n仅色彩图诊断使用临时 2K 模型，绕过光照、金属度与法线，不修改原文件。")
+        .setMessage("引擎：Filament 1.56.0\n"+modelAudit+"\n加载进度："+lastLoadPercent.coerceAtLeast(0)+"%\n仅色彩图诊断使用当前规格的临时原始模型，绕过光照、金属度与法线，不修改原文件。进入后点击 UV 采样对照可切换 glTF 原材质与自定义采样器。")
         .setNegativeButton("关闭",null).setPositiveButton(if(diagnostic)"恢复原模型" else "仅色彩图诊断"){_,_->
+         if(loading||exportBusy)return@setPositiveButton
          diagnostic=!diagnostic;loadMode(selected)
         }.show()
       }
@@ -643,6 +647,7 @@ class MainActivity : Activity() {
       "lightProfile"->chooseLightProfile()
       "materialCompare"->compareMaterials()
       "safeMaterials"->restoreSafeMaterials()
+      "uvProbe"->toggleUvProbe()
       "renderAudit"->showRenderAudit()
       "params"->applyUiParams(j)
       "save"->{prefs.edit().putString("params",data).putFloat("skinSoftness",skinSoftness).apply();status.text="渲染参数已保存"}
@@ -661,7 +666,7 @@ class MainActivity : Activity() {
    if(loadAsset("native_full.glb"))return
    regionModel=false
   }
-  if(!loadAsset(if(diagnostic||mode=="mobile")"mobile.glb" else "full.glb"))maxPresetPending=false
+  if(!loadAsset(if(mode=="mobile")"mobile.glb" else "full.glb"))maxPresetPending=false
  }
  private fun loadAsset(name:String):Boolean {
   return try {
@@ -724,6 +729,50 @@ class MainActivity : Activity() {
    status.text=labels[i]
    js("window.studioLightProfile&&studioLightProfile("+i+")")
   }.setNegativeButton("取消",null).show()
+ }
+ private fun toggleUvProbe(){
+  if(!diagnostic||loading||viewer.asset==null){
+   Toast.makeText(this,"请先进入纹理诊断 → 仅色彩图诊断",Toast.LENGTH_LONG).show();return
+  }
+  val rm=viewer.engine.renderableManager
+  fun restore(){
+   for(b in uvProbeBindings){val ri=rm.getInstance(b.entity);if(ri!=0)rm.setMaterialInstanceAt(ri,b.primitive,b.original)}
+   uvProbeBindings.clear()
+   uvProbeInstance?.let{viewer.engine.destroyMaterialInstance(it)};uvProbeInstance=null
+  }
+  if(uvProbeInstance!=null){
+   restore();status.text="UV 对照 A · 原 glTF 色彩图";js("window.studioUvProbe&&studioUvProbe(false)");return
+  }
+  var created:MaterialInstance?=null
+  try{
+   val asset=viewer.asset?:error("模型未加载")
+   val material=uvProbeShader?:run{
+    val bytes=resources.openRawResource(R.raw.studio_uv_probe).use{it.readBytes()}
+    val buffer=ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder());buffer.put(bytes);buffer.flip()
+    Material.Builder().payload(buffer,bytes.size).build(viewer.engine).also{uvProbeShader=it}
+   }
+   val eligible=mutableListOf<SkinBinding>()
+   for(e in asset.entities){
+    val ri=rm.getInstance(e);if(ri==0)continue
+    for(i in 0 until rm.getPrimitiveCount(ri)){
+     require(rm.getEnabledAttributesAt(ri,i).containsAll(material.requiredAttributes)){"诊断 UV 顶点属性不兼容"}
+     eligible.add(SkinBinding(e,i,rm.getMaterialInstanceAt(ri,i)))
+    }
+   }
+   require(eligible.isNotEmpty())
+   val mi=material.createInstance("Studio_UV_Probe");created=mi
+   val sampler=TextureSampler(TextureSampler.MinFilter.LINEAR_MIPMAP_LINEAR,TextureSampler.MagFilter.LINEAR,TextureSampler.WrapMode.REPEAT)
+   sampler.setAnisotropy(8f)
+   mi.setParameter("baseColorMap",boundAtlas["baseColorMap"]?:error("缺少原始色彩图"),sampler)
+   for(b in eligible){uvProbeBindings.add(b);rm.setMaterialInstanceAt(rm.getInstance(b.entity),b.primitive,mi)}
+   uvProbeInstance=mi
+   status.text="UV 对照 B · 自定义采样器（flipUV=false）"
+   js("window.studioUvProbe&&studioUvProbe(true)")
+  }catch(e:Exception){
+   restore();created?.let{viewer.engine.destroyMaterialInstance(it)}
+   status.text="UV 对照未启用："+e.message
+   js("window.studioUvProbe&&studioUvProbe(false)")
+  }
  }
  private fun showRenderAudit(){
   val vp=viewer.view.viewport
@@ -1334,7 +1383,7 @@ $('model').onchange=()=>change($('model').value);$('switchModel').onclick=()=>ch
 $('endpoint').value='https://xinminyu168-spec.github.io/starling-3d-studio/';$('endpoint').readOnly=true;$('check').onclick=()=>send('check');$('rollback').onclick=()=>send('rollback');
 window.studioProgress=p=>{$('msg').style.display='block';$('msg').textContent='正在加载纹理 '+p+'%';$('modelinfo').textContent='纹理加载 '+p+'%'};
 window.studioFailure=s=>{$('msg').style.display='block';$('msg').textContent=s;$('modelinfo').textContent='加载失败'};
-window.studioDiagnostic=on=>{if(on)$('modelinfo').textContent='仅色彩图诊断 · 2K'};
+window.studioDiagnostic=on=>{uvButton.disabled=!on;if(on)$('modelinfo').textContent='仅色彩图诊断 · 原始 UV';studioUvProbe(false)};
 window.studioRegions=on=>{$('skin').disabled=!on;sssButton.disabled=!on;hairButton.disabled=!on;shellButton.disabled=!on;clothButton.disabled=!on;if(on)$('modelinfo').textContent='高精度 · 4K · 独立材质分区'};
 window.studioSkin=v=>{$('skin').value=v;$('skinV').value=Number(v).toFixed(2)};
 const look=document.createElement("button");look.textContent="影视级 / 保真";look.style.margin="4px";let cine=true;window.studioLook=on=>{cine=on;look.textContent=on?"影视级：开启（点击保真）":"保真：开启（点击影视级）"};look.onclick=()=>send("cinematic",{enabled:!cine});$("check").insertAdjacentElement("afterend",look);
@@ -1358,6 +1407,7 @@ const auditButton=document.createElement('button');auditButton.textContent='渲�
 const exportLock=document.createElement('div');exportLock.style.cssText='display:none;position:fixed;inset:0;background:rgba(0,0,0,.48);color:white;z-index:2147483647;align-items:center;justify-content:center;text-align:center;padding:24px;touch-action:none';exportLock.textContent='正在原生离屏渲染并写入相册，请保持 APP 在前台';document.body.appendChild(exportLock);
 window.studioExportLock=on=>{exportLock.style.display=on?'flex':'none';pointers.clear()};
 const exportButton=document.createElement('button');exportButton.textContent='超高清渲染输出';exportButton.style.margin='4px';exportButton.onclick=()=>send('export');$('check').insertAdjacentElement('afterend',exportButton);
+const uvButton=document.createElement('button');uvButton.style.margin='4px';uvButton.disabled=true;window.studioUvProbe=on=>{uvButton.textContent=on?'UV 对照 B · 点击回到 A':'UV 对照 A · 点击切换 B'};studioUvProbe(false);uvButton.onclick=()=>send('uvProbe');$('check').insertAdjacentElement('afterend',uvButton);
 const diag=document.createElement('button');diag.textContent='纹理诊断';diag.style.margin='4px';diag.onclick=()=>send('diagnose');$('check').insertAdjacentElement('afterend',diag);
 window.studioReady=()=>{studioDefaults();send('ready');send('restore');send('quality',{value:2})};studioReady();
 EOF
@@ -1539,5 +1589,31 @@ fragment {
 MAT
  "$matc" -p mobile -a opengl -o app/src/main/res/raw/studio_shell.filamat "$tmp/studio_shell.mat"
  test -s app/src/main/res/raw/studio_shell.filamat
+ cat > "$tmp/studio_uv_probe.mat" <<'MAT'
+material {
+    name : Studio_UV_Probe,
+    flipUV : false,
+    shadingModel : unlit,
+    requires : [ uv0 ],
+    parameters : [
+        { type : sampler2d, name : baseColorMap }
+    ],
+    doubleSided : true
+}
+fragment {
+    void material(inout MaterialInputs material) {
+        highp vec2 uv = getUV0();
+        prepareMaterial(material);
+        material.baseColor = texture(materialParams_baseColorMap, uv);
+    }
+}
+MAT
+ # Regression guard: every atlas sampling shader must use glTF orientation.
+ for shader in studio_skin studio_hair studio_cloth studio_shell studio_uv_probe; do
+  grep -Eq '^ *flipUV *: *false,' "$tmp/$shader.mat"
+  grep -Eq 'highp vec2 uv = getUV0\(\);' "$tmp/$shader.mat"
+ done
+ "$matc" -p mobile -a opengl -o app/src/main/res/raw/studio_uv_probe.filamat "$tmp/studio_uv_probe.mat"
+ test -s app/src/main/res/raw/studio_uv_probe.filamat
  rm -rf "$tmp"
 fi
