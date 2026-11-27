@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 54
-  versionName '5.2'
+  versionCode 55
+  versionName '5.3'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -534,7 +534,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V5.2").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V5.3").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -645,6 +645,7 @@ class MainActivity : Activity() {
       "pores"->{poreStrength=j.optDouble("value",.35).toFloat().coerceIn(0f,1f);sssInstance?.setParameter("poreStrength",poreStrength);prefs.edit().putFloat("poreStrength",poreStrength).apply()}
       "export"->chooseExport()
       "maximum"->maximumPreset()
+      "portrait"->portraitPreset()
       "lightProfile"->chooseLightProfile()
       "materialCompare"->compareMaterials()
       "safeMaterials"->restoreSafeMaterials()
@@ -723,8 +724,20 @@ class MainActivity : Activity() {
   }
   syncAdvancedUI()
  }
+ private fun portraitPreset(){
+  if(loading||exportBusy||diagnostic||!regionModel||viewer.asset==null){
+   Toast.makeText(this,"请先恢复正常高精度分区模型，再启用质感精修",Toast.LENGTH_LONG).show();return
+  }
+  lightProfile=3
+  lighting(exp,if(flat)0f else keyPower,if(flat)2f else ambientPower)
+  js("window.studioLightProfile&&studioLightProfile(3)")
+  val report=enableAdvancedMaterials()
+  syncAdvancedUI()
+  status.text="角色质感精修 · "+report
+  Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()
+ }
  private fun chooseLightProfile(){
-  val labels=arrayOf("电影三点布光 · 标准","柔和棚拍 · 提升补光","轮廓造型 · 减弱补光、增强轮廓")
+  val labels=arrayOf("电影三点布光 · 标准","柔和棚拍 · 提升补光","轮廓造型 · 减弱补光、增强轮廓","角色肖像 · 正面补光、柔和轮廓")
   android.app.AlertDialog.Builder(this).setTitle("灯光校准").setSingleChoiceItems(labels,lightProfile){dialog,i->
    lightProfile=i;dialog.dismiss()
    lighting(exp,if(flat)0f else keyPower,if(flat)2f else ambientPower)
@@ -1142,9 +1155,13 @@ class MainActivity : Activity() {
   viewer.camera.setExposure(16f,1f/100f,100f*e)
   val lm=viewer.engine.lightManager
   if(mainLamp!=0)lm.setIntensity(lm.getInstance(mainLamp),(if(cinematic)46000f else 38000f)*k)
-  val fillRatio=when(lightProfile){1->1.30f;2->.65f;else->1f}
-  val rimRatio=when(lightProfile){1->.72f;2->1.25f;else->1f}
-  if(fillLamp!=0)lm.setIntensity(lm.getInstance(fillLamp),(if(cinematic)20000f else 30000f)*(if(flat)0f else fillRatio))
+  val fillRatio=when(lightProfile){1->1.30f;2->.65f;3->1.48f;else->1f}
+  val rimRatio=when(lightProfile){1->.72f;2->1.25f;3->.82f;else->1f}
+  if(fillLamp!=0){
+   val fi=lm.getInstance(fillLamp)
+   if(lightProfile==3)lm.setDirection(fi,-.12f,-.12f,-1f)else lm.setDirection(fi,-.6f,-.22f,-.8f)
+   lm.setIntensity(fi,(if(cinematic)20000f else 30000f)*(if(flat)0f else fillRatio))
+  }
   if(rimLamp!=0)lm.setIntensity(lm.getInstance(rimLamp),(if(cinematic)30000f else 12000f)*(if(flat)0f else rimRatio))
   setEnvironment(a,if(flat)0f else reflectPower)
  }
@@ -1486,8 +1503,9 @@ const poreRange=document.createElement('input');poreRange.type='range';poreRange
 window.studioPores=v=>{poreRange.value=v;poreValue.textContent=Number(v).toFixed(2)};poreRange.oninput=()=>{const v=Number(poreRange.value);studioPores(v);send('pores',{value:v})};
 const maxButton=document.createElement('button');maxButton.textContent='最高画质 · 安全 PBR';maxButton.style.margin='4px';maxButton.onclick=()=>send('maximum');$('check').insertAdjacentElement('afterend',maxButton);
 window.studioMaximum=()=>{if(window.studioLightProfile)studioLightProfile(0);studioLook(true);studioRefine(true);studioModel('full');$('quality').value='2';studioDefaults();send('quality',{value:2})};
+const portraitButton=document.createElement('button');portraitButton.textContent='角色质感精修 · 试用';portraitButton.style.margin='4px';portraitButton.onclick=()=>send('portrait');$('check').insertAdjacentElement('afterend',portraitButton);
 const lightingButton=document.createElement('button');lightingButton.textContent='灯光校准 · 标准三点布光';lightingButton.style.margin='4px';lightingButton.onclick=()=>send('lightProfile');$('check').insertAdjacentElement('afterend',lightingButton);
-window.studioLightProfile=i=>{lightingButton.textContent='灯光校准 · '+['标准三点布光','柔和棚拍','轮廓造型'][i]};
+window.studioLightProfile=i=>{lightingButton.textContent='灯光校准 · '+['标准三点布光','柔和棚拍','轮廓造型','角色肖像'][i]};
 const safeButton=document.createElement('button');safeButton.textContent='恢复原始 PBR 材质';safeButton.style.margin='4px';safeButton.onclick=()=>send('safeMaterials');$('check').insertAdjacentElement('afterend',safeButton);
 const compareMaterials=document.createElement('button');compareMaterials.textContent='高级材质 / PBR 对照';compareMaterials.style.margin='4px';compareMaterials.onclick=()=>send('materialCompare');$('check').insertAdjacentElement('afterend',compareMaterials);
 const auditButton=document.createElement('button');auditButton.textContent='渲染诊断报告';auditButton.style.margin='4px';auditButton.onclick=()=>send('renderAudit');$('check').insertAdjacentElement('afterend',auditButton);
@@ -1556,8 +1574,10 @@ fragment {
         prepareMaterial(material);
         material.baseColor = albedo;
         material.metallic = mr.b;
-        material.roughness = clamp(mr.g * mix(0.92, 1.0, t) + 0.035 * envelope * pore, 0.08, 1.0);
-        material.reflectance = mix(0.45, 0.42, envelope * pore);
+        // Soften highlights only on warm non-metal skin candidates; preserve authored atlas.
+        float roughBase = clamp(mr.g * mix(0.92, 1.0, t), 0.08, 1.0);
+        material.roughness = clamp(mix(roughBase, max(roughBase, 0.52), skinMask * t) + 0.035 * envelope * pore, 0.08, 1.0);
+        material.reflectance = mix(0.45, 0.32, skinMask * t) - 0.02 * envelope * pore;
         // A colour-derived scattering proxy, not measured physical skin thickness.
         float warm = smoothstep(0.015, 0.14, albedo.r-albedo.b) * skinMask;
         material.thickness = clamp(mix(0.90, 0.58, t) - 0.10 * warm * t, 0.45, 0.95);
@@ -1593,9 +1613,10 @@ fragment {
         vec3 mr = texture(materialParams_metallicRoughnessMap, uv).rgb;
         material.baseColor = texture(materialParams_baseColorMap, uv);
         material.metallic = mr.b;
-        material.roughness = clamp(mr.g * 0.97, 0.08, 1.0);
-        material.reflectance = 0.5;
-        material.anisotropy = clamp(materialParams.strength, 0.0, 0.65) * (1.0 - mr.b);
+        float strandMask = 1.0 - smoothstep(0.04, 0.25, mr.b);
+        material.roughness = clamp(mix(mr.g, max(mr.g, 0.32), strandMask * 0.65), 0.08, 1.0);
+        material.reflectance = mix(0.5, 0.40, strandMask);
+        material.anisotropy = clamp(materialParams.strength, 0.0, 0.65) * strandMask;
         material.anisotropyDirection = vec3(0.0, 1.0, 0.0);
     }
 }
@@ -1623,7 +1644,9 @@ fragment {
         vec3 mr = texture(materialParams_metallicRoughnessMap, uv).rgb;
         vec4 albedo = texture(materialParams_baseColorMap, uv);
         float t = clamp(materialParams.strength, 0.0, 1.0);
-        float mask = (1.0 - smoothstep(0.02, 0.12, mr.b)) * smoothstep(0.45, 0.62, mr.g);
+        float dielectric = 1.0 - smoothstep(0.02, 0.12, mr.b);
+        float blue = smoothstep(0.025,0.14,albedo.b-albedo.r);
+        float mask = dielectric * max(smoothstep(0.45,0.62,mr.g), blue * smoothstep(0.25,0.48,mr.g));
         vec2 grid = uv * 850.0;
         vec2 footprint = fwidth(grid);
         float fade = 1.0 - smoothstep(0.18, 0.48, max(footprint.x, footprint.y));
@@ -1633,10 +1656,10 @@ fragment {
         prepareMaterial(material);
         material.baseColor = albedo;
         material.metallic = mr.b;
-        material.roughness = clamp(mr.g, 0.08, 1.0);
-        material.reflectance = 0.5;
-        material.sheenColor = sqrt(max(albedo.rgb, vec3(0.0))) * (0.12 * mask * t);
-        material.sheenRoughness = 0.78;
+        material.roughness = clamp(mix(mr.g, max(mr.g,0.68), mask*t), 0.08, 1.0);
+        material.reflectance = mix(0.5,0.35,mask*t);
+        material.sheenColor = sqrt(max(albedo.rgb, vec3(0.0))) * (0.08 * mask * t);
+        material.sheenRoughness = 0.85;
     }
 }
 MAT
@@ -1668,10 +1691,10 @@ fragment {
         prepareMaterial(material);
         material.baseColor = albedo;
         material.metallic = mr.b;
-        material.roughness = clamp(mr.g * 0.94, 0.08, 1.0);
+        material.roughness = clamp(mix(mr.g, max(mr.g,0.32),mask*t), 0.08, 1.0);
         material.reflectance = 0.5;
-        material.clearCoat = 0.45 * mask * t;
-        material.clearCoatRoughness = 0.24;
+        material.clearCoat = 0.32 * mask * t;
+        material.clearCoatRoughness = 0.36;
     }
 }
 MAT
