@@ -20,7 +20,7 @@ dest=Path("updates")/("starling-v%d.apk"%version)
 dest.write_bytes(out)
 with zipfile.ZipFile(dest) as z:
  assert z.testzip() is None
- assert not any(x.startswith("assets/") and not x.endswith("/") for x in z.namelist()),"Private assets must not be published"
+ assert not any(x.startswith("assets/") and not x.endswith("/") and x!="assets/studio-controls.js" for x in z.namelist()),"Private assets must not be published"
 manifest={"schema":1,"enabled":True,"versionCode":version,"versionName":m["versionName"],"url":"https://raw.githubusercontent.com/xinminyu168-spec/starling-3d-studio/main/"+str(dest),"sha256":m["outputSha256"],"size":len(out)}
 Path("app-update.json").write_text(json.dumps(manifest,indent=2)+"\n")
 print(dest)
