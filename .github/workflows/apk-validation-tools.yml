@@ -1,0 +1,36 @@
+name: Export Android APK validation tools
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/apk-validation-tools.yml']
+permissions:
+  contents: read
+  statuses: write
+jobs:
+  tools:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report start
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=pending -f context=starling/apk-tools -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - name: Collect official tools
+        run: |
+          sdk="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          dir="$sdk/build-tools/35.0.0"
+          mkdir -p /tmp/apk-validation
+          cp "$dir/lib/apksigner.jar" "$dir/aapt" "$dir/zipalign" /tmp/apk-validation/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-validation-tools
+          path: /tmp/apk-validation/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Report result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state="$JOB_STATUS" -f context=starling/apk-tools -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
