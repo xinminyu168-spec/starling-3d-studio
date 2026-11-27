@@ -138,12 +138,7 @@ class MainActivity : Activity() {
  }
  private fun loadAsset(name:String) {
   try {
-   val dst=File(cacheDir,name)
-   if(!dst.exists()) {
-    val temp=File(cacheDir,name+".tmp")
-    assets.open(name).use { input -> temp.outputStream().use { output -> input.copyTo(output) } }
-    require(temp.renameTo(dst))
-   }
+   val dst=StudioAssets.file(this,name)
    load(dst)
   } catch(e:Exception) { status.text="内置模型加载失败："+e.message }
  }
@@ -268,7 +263,8 @@ class StudioActivity : Activity() {
   web=WebView(this)
   web.settings.javaScriptEnabled=true
   web.settings.domStorageEnabled=true
-  web.settings.allowFileAccessFromFileURLs=true
+  web.settings.allowFileAccess=false
+  web.settings.allowFileAccessFromFileURLs=false
   web.settings.allowUniversalAccessFromFileURLs=false
   frame.addView(web,FrameLayout.LayoutParams(-1,-1))
   val button=Button(this).apply {
@@ -284,7 +280,22 @@ class StudioActivity : Activity() {
   val check=Button(this).apply { text="检查更新"; textSize=12f; setOnClickListener { updates.check(true) } }
   frame.addView(check,FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM or Gravity.END).apply { setMargins(0,0,8,36) })
   setContentView(frame)
-  web.loadUrl("file:///android_asset/viewer.html")
+  web.webViewClient=object:android.webkit.WebViewClient(){
+   override fun shouldInterceptRequest(view:WebView,request:android.webkit.WebResourceRequest):android.webkit.WebResourceResponse?{
+    val u=request.url
+    if(u.scheme!="https"||u.host!="appassets.androidplatform.net")return null
+    val name=u.path?.removePrefix("/studio/")?:""
+    val mime=when(name){"viewer.html"->"text/html";"reference.png"->"image/png";"full.glb","mobile.glb"->"model/gltf-binary";"studio_env.rgba"->"application/octet-stream";else->return android.webkit.WebResourceResponse("text/plain","UTF-8",404,"Not Found",emptyMap(),java.io.ByteArrayInputStream(ByteArray(0)))}
+    return try{android.webkit.WebResourceResponse(mime,if(name=="viewer.html")"UTF-8" else null,StudioAssets.file(this@StudioActivity,name).inputStream())}catch(e:Exception){android.webkit.WebResourceResponse("text/plain","UTF-8",404,"Not Found",emptyMap(),java.io.ByteArrayInputStream(ByteArray(0)))}
+   }
+  }
+  button.isEnabled=false
+  val progress=android.widget.TextView(this).apply{text="正在保留本地高精度模型…";setTextColor(Color.WHITE);gravity=Gravity.CENTER;setBackgroundColor(Color.rgb(17,19,24))}
+  frame.addView(progress,FrameLayout.LayoutParams(-1,-1))
+  Thread {
+   try{StudioAssets.prepare(this);runOnUiThread{if(!isDestroyed){frame.removeView(progress);button.isEnabled=true;web.loadUrl("https://appassets.androidplatform.net/studio/viewer.html")}}}
+   catch(e:Exception){runOnUiThread{if(!isDestroyed){progress.text="资源准备失败："+e.message+"。请检查存储空间后重新打开。"}}}
+  }.start()
  }
  override fun onPause(){updates.stop();web.onPause();super.onPause()}
  override fun onResume(){super.onResume();web.onResume();updates.start() }
@@ -316,7 +327,7 @@ import org.json.JSONObject
 
 class AppUpdates(private val activity:Activity) {
  private val handler=Handler(Looper.getMainLooper())
- private val base="https://xinminyu168-spec.github.io/starling-3d-studio/"
+ private val base="https://raw.githubusercontent.com/xinminyu168-spec/starling-3d-studio/main/"
  private var busy=false
  private var running=false
  private var prompted=0L
@@ -330,11 +341,11 @@ class AppUpdates(private val activity:Activity) {
  private fun connect(url:String):HttpsURLConnection{
   val u=URL(url)
   require(u.protocol=="https" && u.userInfo==null && u.port==-1)
-  require(u.host=="xinminyu168-spec.github.io" && u.path.startsWith("/starling-3d-studio/"))
+  require((u.host=="xinminyu168-spec.github.io" && u.path.startsWith("/starling-3d-studio/"))||(u.host=="raw.githubusercontent.com" && u.path.startsWith("/xinminyu168-spec/starling-3d-studio/main/")))
   return (u.openConnection() as HttpsURLConnection).apply{connectTimeout=15000;readTimeout=30000;instanceFollowRedirects=false;useCaches=false}
  }
  private fun manifest():JSONObject{
-  val c=connect(base+"app-update.json")
+  val c=connect(base+"app-update.json?t="+System.currentTimeMillis())
   try{require(c.responseCode==200);return c.inputStream.use{ val out=java.io.ByteArrayOutputStream();val b=ByteArray(4096);while(true){val n=it.read(b);if(n<0)break;require(out.size()+n<=32768);out.write(b,0,n)};JSONObject(out.toString("UTF-8")) }}
   finally{c.disconnect()}
  }
@@ -364,6 +375,7 @@ class AppUpdates(private val activity:Activity) {
     val j=manifest()
     val v=j.optLong("versionCode",0)
     if(!j.optBoolean("enabled",false)||v<=version(installed())){handler.post{busy=false;if(manual)notify("暂无可安装的新程序版本")};return@Thread}
+    StudioAssets.prepare(activity)
     val expected=j.getString("sha256").lowercase();require(expected.matches(Regex("[0-9a-f]{64}")))
     val size=j.getLong("size");require(size in 1L..900_000_000L)
     val url=j.getString("url")
@@ -402,6 +414,46 @@ class AppUpdates(private val activity:Activity) {
     catch(e:Exception){prompted=0L;notify("无法启动系统安装器")}
    }
   }.show()
+ }
+}
+EOF
+cat > app/src/main/java/com/starling/filament/StudioAssets.kt <<'EOF'
+package com.starling.filament
+import android.content.Context
+import java.io.File
+import java.security.MessageDigest
+object StudioAssets {
+ private val expected=mapOf(
+ "viewer.html" to (174910L to "9bffc2df459eebf0bbd871416c811de379bb069938904d10ebf127fb89621376"),
+ "studio_env.rgba" to (917504L to "685a171c95fb12ac87563bfd9aee2909ade1450654cedac6d2f710db80cf2efc"),
+ "reference.png" to (111244L to "fd04e1f6d3bf8cb10e9865215b52cebc1ec8da852d80bf6b717f0e51bbd6b9fa"),
+ "full.glb" to (69516136L to "e094d87c9de30b26d67c7089dac00cf159a4ca9966530f1ef938378c06e55ee6"),
+ "mobile.glb" to (14004536L to "d55824a6514a6ab52f0e3d9d0cc0ed9ba3d346207d64e60595326db912fd66f4"),
+ "original_source.zip" to (59564696L to "80e95e1adfbc05cda5c527e1d8bc3780feb85806893ae5a1c6cb05570664f27d"),
+ "native_full.glb" to (93046212L to "97c80d3a7f5b8e6412687ab30574fa4efdb5cd4db0a3115356de426ae411e379")
+ )
+ private fun directory(c:Context)=File(c.filesDir,"studio-assets")
+ @Synchronized fun prepare(c:Context){
+  val dir=directory(c).apply{mkdirs()}
+  for((name,spec) in expected){
+   val dst=File(dir,name)
+   if(dst.exists()&&dst.length()==spec.first)continue
+   require(dir.usableSpace>spec.first+10_000_000L){"可用空间不足"}
+   val tmp=File(dir,name+".part")
+   try{
+    val md=MessageDigest.getInstance("SHA-256")
+    c.assets.open(name).use{input->tmp.outputStream().use{output->val b=ByteArray(65536);var total=0L;while(true){val n=input.read(b);if(n<0)break;total+=n;require(total<=spec.first);md.update(b,0,n);output.write(b,0,n)};require(total==spec.first)}}
+    require(md.digest().joinToString(""){"%02x".format(it)}==spec.second){"内置素材校验失败："+name}
+    if(dst.exists())dst.delete()
+    require(tmp.renameTo(dst))
+   }finally{tmp.delete()}
+  }
+ }
+ fun file(c:Context,name:String):File{
+  val spec=expected[name]?:error("未知资源")
+  val f=File(directory(c),name)
+  require(f.exists()&&f.length()==spec.first){"本地素材未准备："+name}
+  return f
  }
 }
 EOF
