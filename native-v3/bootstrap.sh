@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 41
-  versionName '3.9'
+  versionCode 42
+  versionName '4.0'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -110,6 +110,40 @@ class MainActivity : Activity() {
  private data class Atlas(val parameter:String,val image:ByteArray,val srgb:Boolean)
  private var pendingAtlas=listOf<Atlas>()
  private fun clearExplicit(){for(t in explicitTextures)viewer.engine.destroyTexture(t);explicitTextures.clear();pendingAtlas=emptyList()}
+ // The shared atlas has no semantic material ID. Only refine conservative
+ // colour/roughness candidates; do not relabel arbitrary regions as skin/cloth.
+ private fun decodedAtlas(a:Atlas,mutable:Boolean=false):android.graphics.Bitmap{
+  val opts=android.graphics.BitmapFactory.Options().apply{
+   inPreferredConfig=android.graphics.Bitmap.Config.ARGB_8888;inScaled=false;inMutable=mutable
+   inPreferredColorSpace=android.graphics.ColorSpace.get(android.graphics.ColorSpace.Named.SRGB)
+  }
+  return android.graphics.BitmapFactory.decodeByteArray(a.image,0,a.image.size,opts)?:error("Android 图片解码失败："+a.parameter)
+ }
+ private fun ramp(x:Float,lo:Float,hi:Float):Float=((x-lo)/(hi-lo)).coerceIn(0f,1f).let{it*it*(3f-2f*it)}
+ private fun refineMaterialMap(bmp:android.graphics.Bitmap,base:android.graphics.Bitmap):Long{
+  if(base.width!=bmp.width||base.height!=bmp.height)return 0
+  val w=bmp.width;val h=bmp.height
+  val src=IntArray(w);val mr=IntArray(w)
+  var modified=0L
+  for(y in 0 until h){
+   base.getPixels(src,0,w,0,y,w,1);bmp.getPixels(mr,0,w,0,y,w,1)
+   for(x in 0 until w){
+    val c=src[x];val m=mr[x]
+    val r=((c ushr 16) and 255).toFloat();val g=((c ushr 8) and 255).toFloat();val b=(c and 255).toFloat()
+    val metal=(m and 255).toFloat();val rough=((m ushr 8) and 255).toFloat()
+    val dielectric=1f-ramp(metal,5f,24f)
+    val warm=dielectric*ramp(r,108f,150f)*ramp(r-g,12f,32f)*ramp(g-b,6f,20f)*ramp(r-b,25f,55f)
+    val cool=dielectric*ramp(b,80f,125f)*ramp(b-r,25f,65f)*ramp(b-g,12f,38f)*ramp(rough,120f,155f)
+    // Smoothly lift roughness in already matte areas. No base-colour or metal change.
+    // Existing baked roughness detail is retained; delta is at most 18/255.
+    val delta=warm*9f+cool*18f
+    val adjusted=(rough+delta+.5f).toInt().coerceIn(0,255)
+    if(adjusted!=rough.toInt()){mr[x]=(m and 0xffff00ff.toInt()) or (adjusted shl 8);modified++}
+   }
+   bmp.setPixels(mr,0,w,0,y,w,1)
+  }
+  return modified
+ }
  private fun bindAtlas(){
   val asset=viewer.asset?:error("无可绑定模型")
   val rm=viewer.engine.renderableManager
@@ -117,11 +151,16 @@ class MainActivity : Activity() {
   for(entity in asset.entities){val ri=rm.getInstance(entity);if(ri==0)continue;for(i in 0 until rm.getPrimitiveCount(ri))instances.add(rm.getMaterialInstanceAt(ri,i))}
   require(instances.isNotEmpty()){"无材质实例"}
   val notes=mutableListOf<String>()
+  val baseAtlas=pendingAtlas.firstOrNull{it.parameter=="baseColorMap"}
   for(a in pendingAtlas){
    val targets=instances.filter{it.material.hasParameter(a.parameter)}
    require(targets.isNotEmpty()){"缺少采样器 "+a.parameter}
-   val opts=android.graphics.BitmapFactory.Options().apply{inPreferredConfig=android.graphics.Bitmap.Config.ARGB_8888;inScaled=false}
-   val bmp=android.graphics.BitmapFactory.decodeByteArray(a.image,0,a.image.size,opts)?:error("Android 图片解码失败："+a.parameter)
+   val polish=refineAtlas&&cinematic&&!diagnostic&&a.parameter=="metallicRoughnessMap"&&baseAtlas!=null
+   val bmp=decodedAtlas(a,polish)
+   if(polish){
+    val base=decodedAtlas(baseAtlas!!)
+    try{val changed=refineMaterialMap(bmp,base);notes.add("局部粗糙度精修 "+changed+" 像素")}finally{base.recycle()}
+   }
    val w=bmp.width;val h=bmp.height;require(w in 1..4096&&h in 1..4096)
    val levels=32-Integer.numberOfLeadingZeros(maxOf(w,h))
    val tex=Texture.Builder().width(w).height(h).levels(levels).sampler(Texture.Sampler.SAMPLER_2D).format(if(a.srgb)Texture.InternalFormat.SRGB8_A8 else Texture.InternalFormat.RGBA8).build(viewer.engine)
@@ -129,6 +168,7 @@ class MainActivity : Activity() {
    com.google.android.filament.android.TextureHelper.setBitmap(viewer.engine,tex,0,bmp,android.os.Handler(mainLooper),Runnable{bmp.recycle()})
    tex.generateMipmaps(viewer.engine)
    val sampler=TextureSampler(TextureSampler.MinFilter.LINEAR_MIPMAP_LINEAR,TextureSampler.MagFilter.LINEAR,TextureSampler.WrapMode.REPEAT)
+   sampler.setAnisotropy(8f)
    for(mi in targets){mi.setParameter(a.parameter,tex,sampler)}
    notes.add(a.parameter+" "+w+"×"+h)
   }
@@ -173,6 +213,7 @@ class MainActivity : Activity() {
  private var normal=0.38f
  private var flat=false
  private var cinematic=true
+ private var refineAtlas=true
  private var qualityLevel=2.0
  private var cinematicGrading:ColorGrading?=null
  private var neutralGrading:ColorGrading?=null
@@ -246,7 +287,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V3.9").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V4.0").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -261,6 +302,7 @@ class MainActivity : Activity() {
      initialized=true
      pausedResources=prefs.getBoolean("paused",false)
      cinematic=prefs.getBoolean("cinematic",true)
+     refineAtlas=prefs.getBoolean("refineAtlas",true)
      applyStudioLook()
      if(!prefs.getBoolean("baseline36",false)){prefs.edit().remove("params").putBoolean("baseline36",true).putBoolean("paused",true).putString("model","full").apply();pausedResources=true}
      if(!prefs.getBoolean("cinematic39",false)){prefs.edit().putString("model","full").putBoolean("cinematic39",true).apply()}
@@ -310,7 +352,7 @@ class MainActivity : Activity() {
     try{
      val j=JSONObject(data)
      when(command){
-      "ready"->{js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+")")}
+      "ready"->{js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+")")}
       "pose"->{yaw=j.optDouble("yaw",0.0).toFloat();pitch=j.optDouble("pitch",0.0).toFloat().coerceIn(-85f,85f);zoom=j.optDouble("zoom",1.0).toFloat().coerceIn(.3f,2.5f);panX=j.optDouble("x",0.0).toFloat().coerceIn(-1.5f,1.5f);panY=j.optDouble("y",0.0).toFloat().coerceIn(-1.5f,1.5f);spinning=j.optBoolean("spin",false);applyTransform()}
       "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&(m!=selected||viewer.asset==null)){diagnostic=false;selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
       "diagnose"->{
@@ -321,7 +363,8 @@ class MainActivity : Activity() {
         }.show()
       }
       "quality"->{qualityLevel=j.optDouble("value",2.0);applyStudioLook()}
-      "cinematic"->{cinematic=j.optBoolean("enabled",true);prefs.edit().putBoolean("cinematic",cinematic).apply();applyStudioLook();js("window.studioLook&&studioLook("+cinematic+")")}
+      "cinematic"->{val changed=cinematic!=j.optBoolean("enabled",true);cinematic=j.optBoolean("enabled",true);prefs.edit().putBoolean("cinematic",cinematic).apply();applyStudioLook();js("window.studioLook&&studioLook("+cinematic+")");if(changed&&refineAtlas&&!diagnostic)loadMode(selected)}
+      "refineAtlas"->{val next=j.optBoolean("enabled",true);if(next!=refineAtlas){refineAtlas=next;prefs.edit().putBoolean("refineAtlas",next).apply();if(!diagnostic)loadMode(selected)};js("window.studioRefine&&studioRefine("+refineAtlas+")")}
       "params"->applyUiParams(j)
       "save"->{prefs.edit().putString("params",data).apply();status.text="渲染参数已保存"}
       "restore"->{js("studioRestore("+JSONObject.quote(prefs.getString("params","")?:"")+")")}
@@ -699,6 +742,7 @@ window.studioProgress=p=>{$('msg').style.display='block';$('msg').textContent='�
 window.studioFailure=s=>{$('msg').style.display='block';$('msg').textContent=s;$('modelinfo').textContent='加载失败'};
 window.studioDiagnostic=on=>{if(on)$('modelinfo').textContent='仅色彩图诊断 · 2K'};
 const look=document.createElement("button");look.textContent="影视级 / 保真";look.style.margin="4px";let cine=true;window.studioLook=on=>{cine=on;look.textContent=on?"影视级：开启（点击保真）":"保真：开启（点击影视级）"};look.onclick=()=>send("cinematic",{enabled:!cine});$("check").insertAdjacentElement("afterend",look);
+const polish=document.createElement("button");polish.style.margin="4px";let refine=true;window.studioRefine=on=>{refine=on;polish.textContent=on?"材质精修：开启":"材质精修：关闭"};studioRefine(true);polish.onclick=()=>send("refineAtlas",{enabled:!refine});$("check").insertAdjacentElement("afterend",polish);
 const diag=document.createElement('button');diag.textContent='纹理诊断';diag.style.margin='4px';diag.onclick=()=>send('diagnose');$('check').insertAdjacentElement('afterend',diag);
 window.studioReady=()=>{send('ready');studioDefaults();send('quality',{value:2})};studioReady();
 EOF
