@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 42
-  versionName '4.0'
+  versionCode 43
+  versionName '4.1'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -173,8 +173,39 @@ class MainActivity : Activity() {
    notes.add(a.parameter+" "+w+"×"+h)
   }
   require(notes.isNotEmpty()){"未绑定任何纹理"}
+  if(regionModel)notes.add(refineRegions(instances))
   modelAudit+="\nAndroid 独立解码与显式绑定："+notes.joinToString("；")
   pendingAtlas=emptyList()
+ }
+ // The actual glTF instance labels are supplied by AssetLoader; unknown names
+ // always retain the original glTF values. No whole-model metal or color override.
+ private fun refineRegions(instances:List<MaterialInstance>):String{
+  val applied=mutableSetOf<String>()
+  for(mi in instances){
+   val label=mi.name?:""
+   val normal=when(label){
+    "Skin_candidate"->.40f
+    "Hair_candidate"->.48f
+    "Blue_fabric_candidate"->.62f
+    "Painted_shell_candidate"->.48f
+    else->continue
+   }
+   if(mi.material.hasParameter("normalScale"))mi.setParameter("normalScale",normal)
+   if(mi.material.hasParameter("roughnessFactor")){
+    val factor=when(label){"Painted_shell_candidate"->.94f;"Hair_candidate"->.97f;else->1f}
+    mi.setParameter("roughnessFactor",factor)
+   }
+   // Keep the authored metallic texture and factor for all slots.
+   applied.add(label)
+  }
+  require(applied.size==4){"分区材质名称未完整匹配："+applied.joinToString(",")}
+  return "独立候选材质 "+applied.size+" 个："+applied.joinToString(",")
+ }
+ private fun fallbackRegion(reason:String):Boolean{
+  if(!regionModel)return false
+  regionModel=false
+  status.text="分区加载失败，恢复原模型："+reason
+  return loadAsset("full.glb")
  }
  private fun loadProgress(){
   if(!loading)return
@@ -183,13 +214,17 @@ class MainActivity : Activity() {
   if(percent!=lastLoadPercent){lastLoadPercent=percent;js("window.studioProgress&&studioProgress("+percent+")")}
   if(p>=.9999f){
    loading=false;loadBuffer=null
-   try{bindAtlas()}catch(e:Exception){status.text="显式纹理绑定失败："+e.message;js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")");return}
+   try{bindAtlas()}catch(e:Exception){
+    if(fallbackRegion(e.message?:"纹理绑定异常"))return
+    status.text="显式纹理绑定失败："+e.message;js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")");return
+   }
    applyStudioLook()
    status.text=if(diagnostic)"仅色彩图诊断 · 已加载" else if(cinematic)"影视渲染 · 纹理绑定完成" else "保真渲染 · 纹理绑定完成"
-   js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+")")
+   js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+")")
   }else if(android.os.SystemClock.elapsedRealtime()-loadStart>60000L){
    loading=false
    viewer.destroyModel();clearExplicit();loadBuffer=null
+   if(fallbackRegion("纹理加载超时"))return
    status.text="纹理加载超时，请切换轻量模型"
    js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")")
   }
@@ -214,6 +249,7 @@ class MainActivity : Activity() {
  private var flat=false
  private var cinematic=true
  private var refineAtlas=true
+ private var regionModel=false
  private var qualityLevel=2.0
  private var cinematicGrading:ColorGrading?=null
  private var neutralGrading:ColorGrading?=null
@@ -287,7 +323,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V4.0").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V4.1").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -352,7 +388,7 @@ class MainActivity : Activity() {
     try{
      val j=JSONObject(data)
      when(command){
-      "ready"->{js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+")")}
+      "ready"->{js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+")")}
       "pose"->{yaw=j.optDouble("yaw",0.0).toFloat();pitch=j.optDouble("pitch",0.0).toFloat().coerceIn(-85f,85f);zoom=j.optDouble("zoom",1.0).toFloat().coerceIn(.3f,2.5f);panX=j.optDouble("x",0.0).toFloat().coerceIn(-1.5f,1.5f);panY=j.optDouble("y",0.0).toFloat().coerceIn(-1.5f,1.5f);spinning=j.optBoolean("spin",false);applyTransform()}
       "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&(m!=selected||viewer.asset==null)){diagnostic=false;selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
       "diagnose"->{
@@ -377,16 +413,18 @@ class MainActivity : Activity() {
   }
  }
  private fun loadMode(mode:String) {
-  val f=File(filesDir,"model-"+mode+".glb")
-  // Recovery uses only the verified bundled source; no cached overrides.
-  
+  regionModel=!diagnostic&&mode=="full"&&cinematic&&refineAtlas
+  if(regionModel){
+   if(loadAsset("native_full.glb"))return
+   regionModel=false
+  }
   loadAsset(if(diagnostic||mode=="mobile")"mobile.glb" else "full.glb")
  }
- private fun loadAsset(name:String) {
-  try {
+ private fun loadAsset(name:String):Boolean {
+  return try {
    val dst=StudioAssets.file(this,name)
    load(dst)
-  } catch(e:Exception) { status.text="内置模型加载失败："+e.message }
+  } catch(e:Exception) { status.text="内置模型加载失败："+e.message;false }
  }
  private fun addStudioLight(x:Float,y:Float,z:Float,power:Float,r:Float,g:Float,b:Float,shadow:Boolean):Int {
   val id=EntityManager.get().create()
@@ -451,11 +489,23 @@ class MainActivity : Activity() {
    }
    require(bindings>0){"未找到有效色彩图绑定"}
    modelAudit="文件："+f.name+"\n材质："+materials.length()+" · 图像："+images.length()+" · 色彩图绑定："+bindings
-   // Both bundled GLBs have a single shared atlas. Check all bindings before
-   // explicitly uploading source images; do not silently remap multi-material assets.
-   require(materials.length()==1){"显式绑定目前仅支持原有单图集模型"}
+   // Only share a GPU atlas across slots when all their texture references match.
    val mat=materials.getJSONObject(0)
    val pbr=mat.getJSONObject("pbrMetallicRoughness")
+   val expectedNames=setOf("General","Skin_candidate","Hair_candidate","Blue_fabric_candidate","Painted_shell_candidate","Metal_candidate")
+   if(regionModel){
+    require(materials.length()==6){"分区模型材质数量不一致"}
+    val names=(0 until materials.length()).map{materials.getJSONObject(it).getString("name")}.toSet()
+    require(names==expectedNames){"分区模型名称不一致"}
+   }else require(materials.length()==1){"非分区模型须使用原始单图集"}
+   for(i in 1 until materials.length()){
+    val other=materials.getJSONObject(i)
+    val op=other.getJSONObject("pbrMetallicRoughness")
+    for(key in listOf("baseColorTexture","metallicRoughnessTexture")){
+     require(op.optJSONObject(key)?.toString()==pbr.optJSONObject(key)?.toString()){"不同材质图集不可共享："+key}
+    }
+    require(other.optJSONObject("normalTexture")?.toString()==mat.optJSONObject("normalTexture")?.toString()){"法线绑定不一致"}
+   }
    val views=doc.getJSONArray("bufferViews")
    val dataStart=28+jsonSize
    val atlas=mutableListOf<Atlas>()
@@ -741,6 +791,7 @@ $('endpoint').value='https://xinminyu168-spec.github.io/starling-3d-studio/';$('
 window.studioProgress=p=>{$('msg').style.display='block';$('msg').textContent='正在加载纹理 '+p+'%';$('modelinfo').textContent='纹理加载 '+p+'%'};
 window.studioFailure=s=>{$('msg').style.display='block';$('msg').textContent=s;$('modelinfo').textContent='加载失败'};
 window.studioDiagnostic=on=>{if(on)$('modelinfo').textContent='仅色彩图诊断 · 2K'};
+window.studioRegions=on=>{if(on)$('modelinfo').textContent='高精度 · 4K · 独立材质分区'};
 const look=document.createElement("button");look.textContent="影视级 / 保真";look.style.margin="4px";let cine=true;window.studioLook=on=>{cine=on;look.textContent=on?"影视级：开启（点击保真）":"保真：开启（点击影视级）"};look.onclick=()=>send("cinematic",{enabled:!cine});$("check").insertAdjacentElement("afterend",look);
 const polish=document.createElement("button");polish.style.margin="4px";let refine=true;window.studioRefine=on=>{refine=on;polish.textContent=on?"材质精修：开启":"材质精修：关闭"};studioRefine(true);polish.onclick=()=>send("refineAtlas",{enabled:!refine});$("check").insertAdjacentElement("afterend",polish);
 const diag=document.createElement('button');diag.textContent='纹理诊断';diag.style.margin='4px';diag.onclick=()=>send('diagnose');$('check').insertAdjacentElement('afterend',diag);
