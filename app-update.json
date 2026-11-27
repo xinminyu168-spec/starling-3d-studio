@@ -1,10 +1,9 @@
 {
   "schema": 1,
-  "enabled": false,
-  "versionCode": 32,
-  "versionName": "3.1",
-  "url": "",
-  "sha256": "",
-  "size": 0,
-  "note": "No signed program APK published. Resource updates continue via manifest.json."
+  "enabled": true,
+  "versionCode": 33,
+  "versionName": "3.1.1",
+  "url": "https://raw.githubusercontent.com/xinminyu168-spec/starling-3d-studio/main/updates/starling-v33.apk",
+  "sha256": "a3873dfb99b97d8eb85b5da7a91ea593f20c0c0d9d890ed0928dd4b6598f3f8d",
+  "size": 9697962
 }
