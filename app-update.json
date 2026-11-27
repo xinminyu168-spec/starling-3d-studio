@@ -1,10 +1,9 @@
 {
   "schema": 1,
-  "enabled": false,
-  "versionCode": 37,
-  "versionName": "3.5",
-  "url": "https://raw.githubusercontent.com/xinminyu168-spec/starling-3d-studio/main/updates/starling-v37.apk",
-  "sha256": "8646b40a28c573daaad8383cedd6d07d70f0b2e7466a72be447f4481de1e9e79",
-  "size": 10224994,
-  "note": "Paused after V3.5 device material regression; direct glTF baseline recovery in progress."
+  "enabled": true,
+  "versionCode": 38,
+  "versionName": "3.6",
+  "url": "https://raw.githubusercontent.com/xinminyu168-spec/starling-3d-studio/main/updates/starling-v38.apk",
+  "sha256": "6d96c612171f9069931b26014d299fa9b2df0decb3abfc132d58e1df515f06e0",
+  "size": 10224994
 }
