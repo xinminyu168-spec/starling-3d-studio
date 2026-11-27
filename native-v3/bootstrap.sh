@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 36
-  versionName '3.4'
+  versionCode 37
+  versionName '3.5'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -152,10 +152,12 @@ class MainActivity : Activity() {
   try{
    val bytes=assets.open("studio_ibl.ktx").use{it.readBytes()}
    val b=ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder());b.put(bytes);b.flip()
-   envSH=com.google.android.filament.utils.KTX1Loader.getSphericalHarmonics(b)
-   b.rewind()
-   envTexture=com.google.android.filament.utils.KTX1Loader.createTexture(engine,b)
-   setEnvironment(ambientPower,reflectPower)
+   val env=com.google.android.filament.utils.KTX1Loader.createIndirectLight(engine,b)
+   env.intensity=22000f
+   val previous=ibl
+   viewer.scene.indirectLight=env
+   ibl=env
+   engine.destroyIndirectLight(previous)
   }catch(e:Exception){status.text="HDR 环境载入失败，使用基础环境光"}
   viewer.scene.skybox=Skybox.Builder().color(0.017f,0.02f,0.027f,1f).build(engine)
   viewer.view.ambientOcclusion=com.google.android.filament.View.AmbientOcclusion.SSAO
@@ -163,8 +165,9 @@ class MainActivity : Activity() {
   viewer.view.renderQuality=viewer.view.renderQuality.apply { hdrColorBuffer=com.google.android.filament.View.QualityLevel.HIGH }
   viewer.view.dynamicResolutionOptions=viewer.view.dynamicResolutionOptions.apply { enabled=false }
   viewer.view.multiSampleAntiAliasingOptions=viewer.view.multiSampleAntiAliasingOptions.apply { enabled=true; sampleCount=4 }
-  addLight(-0.6f,-0.45f,-0.5f,14000f)
-  addLight(0.4f,-0.5f,0.7f,24000f)
+  addLight(-0.6f,-0.45f,-0.8f,32000f)
+  addLight(0.6f,-0.25f,-0.8f,24000f)
+  addLight(0.4f,-0.5f,0.7f,14000f)
   web.webViewClient=object:android.webkit.WebViewClient(){
    override fun shouldOverrideUrlLoading(view:android.webkit.WebView,request:android.webkit.WebResourceRequest)=true
    override fun shouldInterceptRequest(view:android.webkit.WebView,request:android.webkit.WebResourceRequest):android.webkit.WebResourceResponse{
@@ -175,7 +178,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V3.4").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V3.5").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -213,17 +216,8 @@ class MainActivity : Activity() {
   tm.setTransform(tm.getInstance(asset.root),result)
  }
  private fun setEnvironment(a:Float,r:Float){
-  val t=envTexture
-  val sh=envSH
-  if(t==null||sh==null){ibl.intensity=18000f*a;return}
-  if(a==lastAmbient&&r==lastReflect)return
-  val spec=r.coerceAtLeast(.01f)
-  val next=IndirectLight.Builder().reflections(t).irradiance(3,sh.map{it*a/spec}.toFloatArray()).intensity(28000f*spec).build(viewer.engine)
-  val old=ibl
-  viewer.scene.indirectLight=next
-  ibl=next
-  viewer.engine.destroyIndirectLight(old)
-  lastAmbient=a;lastReflect=r
+  // Keep Filament's calibrated SH and prefiltered reflections together.
+  ibl.intensity=22000f*a.coerceIn(.25f,2f)
  }
  private fun applyMaterial(){
   val asset=viewer.asset?:return
@@ -233,16 +227,38 @@ class MainActivity : Activity() {
    for(i in 0 until rm.getPrimitiveCount(inst)){
     val mat=rm.getMaterialInstanceAt(inst,i)
     val name=mat.name.lowercase()
-    val r=when{ "skin" in name->.98f; "fabric" in name->1f; "hair" in name->.89f; "shell" in name->.78f; "metal" in name->.82f;else->.95f}
-    val n=when{ "skin" in name->.3f; "fabric" in name->.85f; "hair" in name->.65f;else->.8f}
-    if(mat.material.hasParameter("roughnessFactor"))mat.setParameter("roughnessFactor",(r*rough).coerceIn(.25f,1f))
-    if(mat.material.hasParameter("normalScale"))mat.setParameter("normalScale",(n*normal).coerceIn(0f,1f))
-    if(mat.material.hasParameter("metallicFactor")){
-     val metal=when{"skin" in name||"hair" in name||"fabric" in name->0f;"shell" in name->.25f;else->1f}
-     mat.setParameter("metallicFactor",metal)
-    }
+    val r=when{ "skin" in name->.74f; "fabric" in name->.84f; "hair" in name->.70f; "shell" in name->.52f;else->.74f}
+    val n=when{"skin" in name->.15f; "fabric" in name->.30f; "hair" in name->.24f;else->.23f}
+    if(mat.material.hasParameter("roughnessFactor"))mat.setParameter("roughnessFactor",(r*rough).coerceIn(.4f,1f))
+    if(mat.material.hasParameter("normalScale"))mat.setParameter("normalScale",(n*normal/.38f).coerceIn(0f,.45f))
+    // Shared and unidentified slots are always dielectric, never solid metal.
+    if(mat.material.hasParameter("metallicFactor"))mat.setParameter("metallicFactor",0f)
    }
   }
+ }
+ // Build a temporary recovery material description without modifying any source asset,
+ // geometry, UVs, or base-color image. Use a stable dielectric baseline until verified.
+ private fun recoveryGlb(source:ByteBuffer):ByteBuffer{
+  source.order(ByteOrder.LITTLE_ENDIAN)
+  val n=source.getInt(12)
+  require(n in 2..4_000_000 && n%4==0 && 20+n+8<=source.limit())
+  require(source.getInt(16)==0x4e4f534a)
+  val bytes=ByteArray(n);source.position(20);source.get(bytes)
+  val doc=JSONObject(String(bytes,Charsets.UTF_8).trim())
+  val materials=doc.optJSONArray("materials")
+  if(materials!=null)for(i in 0 until materials.length()){
+   val m=materials.getJSONObject(i)
+   val p=m.optJSONObject("pbrMetallicRoughness")?:JSONObject().also{m.put("pbrMetallicRoughness",it)}
+   p.put("metallicFactor",0.0);p.put("roughnessFactor",.74)
+   p.remove("metallicRoughnessTexture")
+   m.optJSONObject("normalTexture")?.put("scale",.18)
+  }
+  val json=doc.toString().toByteArray(Charsets.UTF_8)
+  val padded=(json.size+3)/4*4
+  source.position(20+n)
+  val out=ByteBuffer.allocateDirect(20+padded+source.remaining()).order(ByteOrder.LITTLE_ENDIAN)
+  out.putInt(0x46546c67);out.putInt(2);out.putInt(out.capacity());out.putInt(padded);out.putInt(0x4e4f534a)
+  out.put(json);repeat(padded-json.size){out.put(32.toByte())};out.put(source);out.flip();return out
  }
  private fun applyUiParams(j:JSONObject){
   exp=j.optDouble("exposure",1.04).toFloat().coerceIn(.55f,1.7f)
@@ -295,9 +311,9 @@ class MainActivity : Activity() {
   viewer.scene.addEntity(id)
  }
  private fun lighting(e:Float,k:Float,a:Float) {
-  viewer.camera.setExposure(16f,1f/125f,100f*e)
+  viewer.camera.setExposure(16f,1f/100f,100f*e)
   val lm=viewer.engine.lightManager
-  lm.setIntensity(lm.getInstance(viewer.light),38000f*k)
+  lm.setIntensity(lm.getInstance(viewer.light),48000f*k)
   setEnvironment(a,if(flat)0f else reflectPower)
  }
  private fun load(f:File):Boolean {
@@ -306,7 +322,7 @@ class MainActivity : Activity() {
    val b=ByteBuffer.allocateDirect(n.toInt()).order(ByteOrder.LITTLE_ENDIAN)
    f.inputStream().channel.use { ch -> while(b.hasRemaining()) { if(ch.read(b)<0) error("文件不完整") } }
    b.flip(); require(b.getInt(0)==0x46546c67); require(b.getInt(4)==2); require(b.getInt(8)==n.toInt())
-   viewer.loadModelGlb(b); require(viewer.asset!=null){"Filament 无法解析模型"}; viewer.transformToUnitCube(); val tm=viewer.engine.transformManager; baseTransform=tm.getTransform(tm.getInstance(viewer.asset!!.root),FloatArray(16)); applyTransform();applyMaterial();status.text="模型已载入";js("studioLoaded("+JSONObject.quote(selected)+")");return true
+   viewer.loadModelGlb(recoveryGlb(b)); require(viewer.asset!=null){"Filament 无法解析模型"}; viewer.transformToUnitCube(); val tm=viewer.engine.transformManager; baseTransform=tm.getTransform(tm.getInstance(viewer.asset!!.root),FloatArray(16)); applyTransform();applyMaterial();status.text="模型已载入";js("studioLoaded("+JSONObject.quote(selected)+")");return true
   } catch(e:Exception) { status.text="加载失败："+e.message; return false }
  }
  override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
@@ -572,7 +588,7 @@ EOF
 cat > app/src/main/assets/studio-controls.js <<'EOF'
 'use strict';
 const $=id=>document.getElementById(id),cv=$('cv');
-const defaults={exposure:1.04,key:1,ambient:1,rough:1.13,normal:.38,skin:.55,reflect:.85};
+const defaults={exposure:1.04,key:1,ambient:1,rough:1.0,normal:.3,skin:.55,reflect:.85};
 const names=Object.keys(defaults);
 function send(c,d={}){Studio.send(c,JSON.stringify(d))}
 let yaw=0,pitch=0,zoom=1,x=0,y=0,spin=false,compare=false;
@@ -591,7 +607,7 @@ $('compare').onclick=()=>{compare=!compare;document.body.classList.toggle('compa
 function params(){let p={};for(const n of names){p[n]=Number($(n).value);$(n+'V').value=p[n].toFixed(2)}p.flat=$('light').value==='0';return p}
 function apply(p){for(const n of names)if(Number.isFinite(p[n]))$(n).value=p[n];if(typeof p.flat==='boolean')$('light').value=p.flat?'0':'1';send('params',params())}
 for(const n of names)$(n).oninput=()=>send('params',params());
-$('skin').disabled=true;$('skin').title='独立皮肤着色尚未迁移';$('reflect').title='HDR 环境反射强度';
+$('skin').disabled=true;$('skin').title='独立皮肤着色尚未迁移';$('reflect').disabled=true;$('reflect').title='恢复模式：环境反射与漫反射保持官方 IBL 默认比例';
 $('light').options[1].textContent='柔和平光';$('light').onchange=()=>send('params',params());
 $('quality').onchange=()=>send('quality',{value:Number($('quality').value)});
 $('save').onclick=()=>send('save',params());window.studioDefaults=()=>apply({...defaults,flat:false});$('defaults').onclick=studioDefaults;
