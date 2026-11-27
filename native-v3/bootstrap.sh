@@ -173,6 +173,7 @@ class MainActivity : Activity() {
  private var normal=0.38f
  private var flat=false
  private var cinematic=true
+ private var qualityLevel=2.0
  private var cinematicGrading:ColorGrading?=null
  private var neutralGrading:ColorGrading?=null
  private var mainLamp=0
@@ -262,6 +263,7 @@ class MainActivity : Activity() {
      cinematic=prefs.getBoolean("cinematic",true)
      applyStudioLook()
      if(!prefs.getBoolean("baseline36",false)){prefs.edit().remove("params").putBoolean("baseline36",true).putBoolean("paused",true).putString("model","full").apply();pausedResources=true}
+     if(!prefs.getBoolean("cinematic39",false)){prefs.edit().putString("model","full").putBoolean("cinematic39",true).apply()}
      selected=prefs.getString("model","full")?:"full"
      if(selected!="mobile")selected="full"
      web.loadUrl("https://appassets.androidplatform.net/studio/viewer.html")
@@ -318,7 +320,7 @@ class MainActivity : Activity() {
          diagnostic=!diagnostic;loadMode(selected)
         }.show()
       }
-      "quality"->{val q=j.optDouble("value",2.0);viewer.view.multiSampleAntiAliasingOptions=viewer.view.multiSampleAntiAliasingOptions.apply{enabled=q>1;sampleCount=if(q>=2)4 else 2};viewer.view.ambientOcclusion=com.google.android.filament.View.AmbientOcclusion.NONE}
+      "quality"->{qualityLevel=j.optDouble("value",2.0);applyStudioLook()}
       "cinematic"->{cinematic=j.optBoolean("enabled",true);prefs.edit().putBoolean("cinematic",cinematic).apply();applyStudioLook();js("window.studioLook&&studioLook("+cinematic+")")}
       "params"->applyUiParams(j)
       "save"->{prefs.edit().putString("params",data).apply();status.text="渲染参数已保存"}
@@ -360,13 +362,13 @@ class MainActivity : Activity() {
   v.setShadowType(if(quality)com.google.android.filament.View.ShadowType.PCSS else com.google.android.filament.View.ShadowType.PCF)
   v.setSoftShadowOptions(com.google.android.filament.View.SoftShadowOptions().apply{penumbraScale=1.2f;penumbraRatioScale=1f})
   v.setAmbientOcclusionOptions(com.google.android.filament.View.AmbientOcclusionOptions().apply{
-   enabled=quality;radius=.035f;intensity=.35f;power=1f;resolution=1f
+   enabled=quality&&qualityLevel>=1.0;radius=.035f;intensity=.35f;power=1f;resolution=if(qualityLevel>=2)1f else .5f
    this.quality=com.google.android.filament.View.QualityLevel.HIGH
   })
   v.setTemporalAntiAliasingOptions(com.google.android.filament.View.TemporalAntiAliasingOptions().apply{enabled=quality;feedback=.18f;filterWidth=.9f;lodBias=-.5f})
   v.antiAliasing=if(quality)com.google.android.filament.View.AntiAliasing.NONE else com.google.android.filament.View.AntiAliasing.FXAA
   v.setDithering(com.google.android.filament.View.Dithering.NONE)
-  v.multiSampleAntiAliasingOptions=v.multiSampleAntiAliasingOptions.apply{enabled=true;sampleCount=4}
+  v.multiSampleAntiAliasingOptions=v.multiSampleAntiAliasingOptions.apply{enabled=qualityLevel>1;sampleCount=if(qualityLevel>=2)4 else 2}
   val lm=viewer.engine.lightManager
   if(mainLamp!=0)lm.setShadowCaster(lm.getInstance(mainLamp),quality)
   val rm=viewer.engine.renderableManager
