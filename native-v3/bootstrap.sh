@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 40
-  versionName '3.8'
+  versionCode 41
+  versionName '3.9'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -144,7 +144,8 @@ class MainActivity : Activity() {
   if(p>=.9999f){
    loading=false;loadBuffer=null
    try{bindAtlas()}catch(e:Exception){status.text="显式纹理绑定失败："+e.message;js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")");return}
-   status.text=if(diagnostic)"仅色彩图诊断 · 已加载" else "模型及纹理加载完成"
+   applyStudioLook()
+   status.text=if(diagnostic)"仅色彩图诊断 · 已加载" else if(cinematic)"影视渲染 · 纹理绑定完成" else "保真渲染 · 纹理绑定完成"
    js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+")")
   }else if(android.os.SystemClock.elapsedRealtime()-loadStart>60000L){
    loading=false
@@ -171,6 +172,12 @@ class MainActivity : Activity() {
  private var rough=1.13f
  private var normal=0.38f
  private var flat=false
+ private var cinematic=true
+ private var cinematicGrading:ColorGrading?=null
+ private var neutralGrading:ColorGrading?=null
+ private var mainLamp=0
+ private var fillLamp=0
+ private var rimLamp=0
  private var pausedResources=false
  private val prefs by lazy { getSharedPreferences("studio_ui",0) }
  private fun js(code:String){if(::web.isInitialized&&!isDestroyed)web.evaluateJavascript(code,null)}
@@ -213,15 +220,21 @@ class MainActivity : Activity() {
    ibl=env
    engine.destroyIndirectLight(previous)
   }catch(e:Exception){status.text="HDR 环境载入失败，使用基础环境光"}
-  viewer.scene.skybox=Skybox.Builder().color(0.017f,0.02f,0.027f,1f).build(engine)
+  viewer.scene.skybox=Skybox.Builder().color(0f,0f,0f,1f).build(engine)
   viewer.view.ambientOcclusion=com.google.android.filament.View.AmbientOcclusion.NONE
   viewer.view.antiAliasing=com.google.android.filament.View.AntiAliasing.FXAA
   viewer.view.renderQuality=viewer.view.renderQuality.apply { hdrColorBuffer=com.google.android.filament.View.QualityLevel.HIGH }
   viewer.view.dynamicResolutionOptions=viewer.view.dynamicResolutionOptions.apply { enabled=false }
   viewer.view.multiSampleAntiAliasingOptions=viewer.view.multiSampleAntiAliasingOptions.apply { enabled=true; sampleCount=4 }
-  addLight(-0.6f,-0.45f,-0.8f,32000f)
-  addLight(0.6f,-0.25f,-0.8f,24000f)
-  addLight(0.4f,-0.5f,0.7f,14000f)
+  val lm=engine.lightManager
+  lm.setIntensity(lm.getInstance(viewer.light),0f)
+  lm.setShadowCaster(lm.getInstance(viewer.light),false)
+  mainLamp=addStudioLight(.58f,-.58f,-.58f,46000f,1f,.96f,.92f,true)
+  fillLamp=addStudioLight(-.6f,-.22f,-.8f,20000f,.93f,.97f,1f,false)
+  rimLamp=addStudioLight(-.38f,-.5f,.78f,30000f,.87f,.94f,1f,false)
+  cinematicGrading=ColorGrading.Builder().quality(ColorGrading.QualityLevel.ULTRA).toneMapping(ColorGrading.ToneMapping.ACES).saturation(.94f).contrast(1.025f).build(engine)
+  neutralGrading=ColorGrading.Builder().quality(ColorGrading.QualityLevel.HIGH).toneMapping(ColorGrading.ToneMapping.LINEAR).saturation(1f).contrast(1f).build(engine)
+  applyStudioLook()
   web.webViewClient=object:android.webkit.WebViewClient(){
    override fun shouldOverrideUrlLoading(view:android.webkit.WebView,request:android.webkit.WebResourceRequest)=true
    override fun shouldInterceptRequest(view:android.webkit.WebView,request:android.webkit.WebResourceRequest):android.webkit.WebResourceResponse{
@@ -232,7 +245,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V3.8").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V3.9").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -246,6 +259,8 @@ class MainActivity : Activity() {
     if(!isDestroyed){
      initialized=true
      pausedResources=prefs.getBoolean("paused",false)
+     cinematic=prefs.getBoolean("cinematic",true)
+     applyStudioLook()
      if(!prefs.getBoolean("baseline36",false)){prefs.edit().remove("params").putBoolean("baseline36",true).putBoolean("paused",true).putString("model","full").apply();pausedResources=true}
      selected=prefs.getString("model","full")?:"full"
      if(selected!="mobile")selected="full"
@@ -293,7 +308,7 @@ class MainActivity : Activity() {
     try{
      val j=JSONObject(data)
      when(command){
-      "ready"->{js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+")")}
+      "ready"->{js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+")")}
       "pose"->{yaw=j.optDouble("yaw",0.0).toFloat();pitch=j.optDouble("pitch",0.0).toFloat().coerceIn(-85f,85f);zoom=j.optDouble("zoom",1.0).toFloat().coerceIn(.3f,2.5f);panX=j.optDouble("x",0.0).toFloat().coerceIn(-1.5f,1.5f);panY=j.optDouble("y",0.0).toFloat().coerceIn(-1.5f,1.5f);spinning=j.optBoolean("spin",false);applyTransform()}
       "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&(m!=selected||viewer.asset==null)){diagnostic=false;selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
       "diagnose"->{
@@ -304,6 +319,7 @@ class MainActivity : Activity() {
         }.show()
       }
       "quality"->{val q=j.optDouble("value",2.0);viewer.view.multiSampleAntiAliasingOptions=viewer.view.multiSampleAntiAliasingOptions.apply{enabled=q>1;sampleCount=if(q>=2)4 else 2};viewer.view.ambientOcclusion=com.google.android.filament.View.AmbientOcclusion.NONE}
+      "cinematic"->{cinematic=j.optBoolean("enabled",true);prefs.edit().putBoolean("cinematic",cinematic).apply();applyStudioLook();js("window.studioLook&&studioLook("+cinematic+")")}
       "params"->applyUiParams(j)
       "save"->{prefs.edit().putString("params",data).apply();status.text="渲染参数已保存"}
       "restore"->{js("studioRestore("+JSONObject.quote(prefs.getString("params","")?:"")+")")}
@@ -327,15 +343,46 @@ class MainActivity : Activity() {
    load(dst)
   } catch(e:Exception) { status.text="内置模型加载失败："+e.message }
  }
- private fun addLight(x:Float,y:Float,z:Float,power:Float) {
+ private fun addStudioLight(x:Float,y:Float,z:Float,power:Float,r:Float,g:Float,b:Float,shadow:Boolean):Int {
   val id=EntityManager.get().create()
-  LightManager.Builder(LightManager.Type.DIRECTIONAL).color(1f,1f,1f).intensity(power).direction(x,y,z).castShadows(false).build(viewer.engine,id)
+  val options=LightManager.ShadowOptions().apply{
+   mapSize=2048;shadowCascades=1;shadowBulbRadius=.045f;constantBias=.001f;normalBias=.5f
+  }
+  LightManager.Builder(LightManager.Type.DIRECTIONAL).color(r,g,b).intensity(power).direction(x,y,z).shadowOptions(options).castShadows(shadow).build(viewer.engine,id)
   viewer.scene.addEntity(id)
+  return id
  }
+ private fun applyStudioLook(){
+  val v=viewer.view
+  val quality=cinematic&&!diagnostic
+  v.setColorGrading(if(quality)cinematicGrading else neutralGrading)
+  v.setShadowingEnabled(quality)
+  v.setShadowType(if(quality)com.google.android.filament.View.ShadowType.PCSS else com.google.android.filament.View.ShadowType.PCF)
+  v.setSoftShadowOptions(com.google.android.filament.View.SoftShadowOptions().apply{penumbraScale=1.2f;penumbraRatioScale=1f})
+  v.setAmbientOcclusionOptions(com.google.android.filament.View.AmbientOcclusionOptions().apply{
+   enabled=quality;radius=.035f;intensity=.35f;power=1f;resolution=1f
+   this.quality=com.google.android.filament.View.QualityLevel.HIGH
+  })
+  v.setTemporalAntiAliasingOptions(com.google.android.filament.View.TemporalAntiAliasingOptions().apply{enabled=quality;feedback=.18f;filterWidth=.9f;lodBias=-.5f})
+  v.antiAliasing=if(quality)com.google.android.filament.View.AntiAliasing.NONE else com.google.android.filament.View.AntiAliasing.FXAA
+  v.setDithering(com.google.android.filament.View.Dithering.NONE)
+  v.multiSampleAntiAliasingOptions=v.multiSampleAntiAliasingOptions.apply{enabled=true;sampleCount=4}
+  val lm=viewer.engine.lightManager
+  if(mainLamp!=0)lm.setShadowCaster(lm.getInstance(mainLamp),quality)
+  val rm=viewer.engine.renderableManager
+  viewer.asset?.entities?.forEach{entity->
+   val ri=rm.getInstance(entity)
+   if(ri!=0){rm.setCastShadows(ri,quality);rm.setReceiveShadows(ri,quality)}
+  }
+  lighting(exp,if(flat)0f else keyPower,if(flat)2f else ambientPower)
+ }
+
  private fun lighting(e:Float,k:Float,a:Float) {
   viewer.camera.setExposure(16f,1f/100f,100f*e)
   val lm=viewer.engine.lightManager
-  lm.setIntensity(lm.getInstance(viewer.light),48000f*k)
+  if(mainLamp!=0)lm.setIntensity(lm.getInstance(mainLamp),(if(cinematic)46000f else 38000f)*k)
+  if(fillLamp!=0)lm.setIntensity(lm.getInstance(fillLamp),(if(cinematic)20000f else 30000f)*(if(flat)0f else 1f))
+  if(rimLamp!=0)lm.setIntensity(lm.getInstance(rimLamp),(if(cinematic)30000f else 12000f)*(if(flat)0f else 1f))
   setEnvironment(a,if(flat)0f else reflectPower)
  }
  private fun load(f:File):Boolean {
@@ -649,6 +696,7 @@ $('endpoint').value='https://xinminyu168-spec.github.io/starling-3d-studio/';$('
 window.studioProgress=p=>{$('msg').style.display='block';$('msg').textContent='正在加载纹理 '+p+'%';$('modelinfo').textContent='纹理加载 '+p+'%'};
 window.studioFailure=s=>{$('msg').style.display='block';$('msg').textContent=s;$('modelinfo').textContent='加载失败'};
 window.studioDiagnostic=on=>{if(on)$('modelinfo').textContent='仅色彩图诊断 · 2K'};
+const look=document.createElement("button");look.textContent="影视级 / 保真";look.style.margin="4px";let cine=true;window.studioLook=on=>{cine=on;look.textContent=on?"影视级：开启（点击保真）":"保真：开启（点击影视级）"};look.onclick=()=>send("cinematic",{enabled:!cine});$("check").insertAdjacentElement("afterend",look);
 const diag=document.createElement('button');diag.textContent='纹理诊断';diag.style.margin='4px';diag.onclick=()=>send('diagnose');$('check').insertAdjacentElement('afterend',diag);
 window.studioReady=()=>{send('ready');studioDefaults();send('quality',{value:2})};studioReady();
 EOF
