@@ -2,6 +2,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p app/src/main/java/com/starling/filament app/src/main/assets
+cat > gradle.properties <<'EOF'
+android.useAndroidX=true
+org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+EOF
 cat > settings.gradle <<'EOF'
 pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
 dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
