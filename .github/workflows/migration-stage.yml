@@ -15,7 +15,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: Starling-Filament-3.0-alpha
-          run-id: '46056376495'
+          run-id: '46060031021'
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/starling-build
       - name: Sign staging APK with new owner-controlled key
@@ -34,13 +34,13 @@ jobs:
           fingerprint="$(sha256sum "$keydir/cert.der" | cut -d' ' -f1)"
           sdk="${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools/35.0.0"
           mkdir -p "$RUNNER_TEMP/staged"
-          out="$RUNNER_TEMP/staged/Starling-V53-migration.apk"
+          out="$RUNNER_TEMP/staged/Starling-V54-migration.apk"
           "$sdk/apksigner" sign --key "$keydir/key.pk8" --cert "$keydir/cert.der" --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false --out "$out" "$RUNNER_TEMP/starling-build/app-debug.apk"
           "$sdk/apksigner" verify --verbose --print-certs "$out" > "$RUNNER_TEMP/cert.txt"
           grep -Fx "Signer #1 certificate SHA-256 digest: $fingerprint" "$RUNNER_TEMP/cert.txt"
           "$sdk/zipalign" -c -P 16 4 "$out"
           "$sdk/aapt" dump badging "$out" > "$RUNNER_TEMP/badging.txt"
-          grep -F "package: name='com.xs.character.viewer' versionCode='55' versionName='5.3'" "$RUNNER_TEMP/badging.txt"
+          grep -F "package: name='com.xs.character.viewer' versionCode='56' versionName='5.4'" "$RUNNER_TEMP/badging.txt"
           python - "$out" <<'PY'
           import sys,zipfile
           with zipfile.ZipFile(sys.argv[1]) as z:
@@ -48,10 +48,10 @@ jobs:
               assert len([x for x in z.namelist() if x.endswith('.filamat')]) == 5
           PY
           printf '%s\n' "$fingerprint" > "$RUNNER_TEMP/staged/CERT-SHA256.txt"
-          (cd "$RUNNER_TEMP/staged" && sha256sum Starling-V53-migration.apk > SHA256SUMS.txt)
+          (cd "$RUNNER_TEMP/staged" && sha256sum Starling-V54-migration.apk > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: Starling-V53-migration-staged
+          name: Starling-V54-migration-staged
           path: ${{ runner.temp }}/staged/
           if-no-files-found: error
           retention-days: 14
