@@ -1,10 +1,9 @@
 {
   "schema": 1,
-  "enabled": false,
-  "versionCode": 33,
-  "versionName": "3.1.1",
-  "url": "https://raw.githubusercontent.com/xinminyu168-spec/starling-3d-studio/main/updates/starling-v33.apk",
-  "sha256": "a3873dfb99b97d8eb85b5da7a91ea593f20c0c0d9d890ed0928dd4b6598f3f8d",
-  "size": 9697962,
-  "note": "Paused after Android package parsing error; confirmation-first update required."
+  "enabled": true,
+  "versionCode": 36,
+  "versionName": "3.4",
+  "url": "https://raw.githubusercontent.com/xinminyu168-spec/starling-3d-studio/main/updates/starling-v36.apk",
+  "sha256": "f66678b5792af00a0ca42c3dc1afbed3d60f817e04890b4682b3f8808fe9f5b4",
+  "size": 10224994
 }
