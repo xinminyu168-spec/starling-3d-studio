@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 39
-  versionName '3.7'
+  versionCode 40
+  versionName '3.8'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -106,6 +106,36 @@ class MainActivity : Activity() {
  private var lastLoadPercent=-1
  private var diagnostic=false
  private var modelAudit=""
+ private val explicitTextures=mutableListOf<Texture>()
+ private data class Atlas(val parameter:String,val image:ByteArray,val srgb:Boolean)
+ private var pendingAtlas=listOf<Atlas>()
+ private fun clearExplicit(){for(t in explicitTextures)viewer.engine.destroyTexture(t);explicitTextures.clear();pendingAtlas=emptyList()}
+ private fun bindAtlas(){
+  val asset=viewer.asset?:error("无可绑定模型")
+  val rm=viewer.engine.renderableManager
+  val instances=mutableListOf<MaterialInstance>()
+  for(entity in asset.entities){val ri=rm.getInstance(entity);if(ri==0)continue;for(i in 0 until rm.getPrimitiveCount(ri))instances.add(rm.getMaterialInstanceAt(ri,i))}
+  require(instances.isNotEmpty()){"无材质实例"}
+  val notes=mutableListOf<String>()
+  for(a in pendingAtlas){
+   val targets=instances.filter{it.material.hasParameter(a.parameter)}
+   require(targets.isNotEmpty()){"缺少采样器 "+a.parameter}
+   val opts=android.graphics.BitmapFactory.Options().apply{inPreferredConfig=android.graphics.Bitmap.Config.ARGB_8888;inScaled=false}
+   val bmp=android.graphics.BitmapFactory.decodeByteArray(a.image,0,a.image.size,opts)?:error("Android 图片解码失败："+a.parameter)
+   val w=bmp.width;val h=bmp.height;require(w in 1..4096&&h in 1..4096)
+   val levels=32-Integer.numberOfLeadingZeros(maxOf(w,h))
+   val tex=Texture.Builder().width(w).height(h).levels(levels).sampler(Texture.Sampler.SAMPLER_2D).format(if(a.srgb)Texture.InternalFormat.SRGB8_A8 else Texture.InternalFormat.RGBA8).build(viewer.engine)
+   explicitTextures.add(tex)
+   com.google.android.filament.android.TextureHelper.setBitmap(viewer.engine,tex,0,bmp,android.os.Handler(mainLooper),Runnable{bmp.recycle()})
+   tex.generateMipmaps(viewer.engine)
+   val sampler=TextureSampler(TextureSampler.MinFilter.LINEAR_MIPMAP_LINEAR,TextureSampler.MagFilter.LINEAR,TextureSampler.WrapMode.REPEAT)
+   for(mi in targets){mi.setParameter(a.parameter,tex,sampler)}
+   notes.add(a.parameter+" "+w+"×"+h)
+  }
+  require(notes.isNotEmpty()){"未绑定任何纹理"}
+  modelAudit+="\nAndroid 独立解码与显式绑定："+notes.joinToString("；")
+  pendingAtlas=emptyList()
+ }
  private fun loadProgress(){
   if(!loading)return
   val p=viewer.progress.coerceIn(0f,1f)
@@ -113,11 +143,12 @@ class MainActivity : Activity() {
   if(percent!=lastLoadPercent){lastLoadPercent=percent;js("window.studioProgress&&studioProgress("+percent+")")}
   if(p>=.9999f){
    loading=false;loadBuffer=null
+   try{bindAtlas()}catch(e:Exception){status.text="显式纹理绑定失败："+e.message;js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")");return}
    status.text=if(diagnostic)"仅色彩图诊断 · 已加载" else "模型及纹理加载完成"
    js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+")")
   }else if(android.os.SystemClock.elapsedRealtime()-loadStart>60000L){
    loading=false
-   viewer.destroyModel();loadBuffer=null
+   viewer.destroyModel();clearExplicit();loadBuffer=null
    status.text="纹理加载超时，请切换轻量模型"
    js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")")
   }
@@ -201,7 +232,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V3.7").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V3.8").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -328,9 +359,33 @@ class MainActivity : Activity() {
    }
    require(bindings>0){"未找到有效色彩图绑定"}
    modelAudit="文件："+f.name+"\n材质："+materials.length()+" · 图像："+images.length()+" · 色彩图绑定："+bindings
+   // Both bundled GLBs have a single shared atlas. Check all bindings before
+   // explicitly uploading source images; do not silently remap multi-material assets.
+   require(materials.length()==1){"显式绑定目前仅支持原有单图集模型"}
+   val mat=materials.getJSONObject(0)
+   val pbr=mat.getJSONObject("pbrMetallicRoughness")
+   val views=doc.getJSONArray("bufferViews")
+   val dataStart=28+jsonSize
+   val atlas=mutableListOf<Atlas>()
+   fun add(parameter:String,ref:JSONObject?,srgb:Boolean){
+    if(ref==null)return
+    require(ref.optInt("texCoord",0)==0)
+    val source=textures.getJSONObject(ref.getInt("index")).getInt("source")
+    val view=views.getJSONObject(images.getJSONObject(source).getInt("bufferView"))
+    require(view.optInt("buffer",0)==0)
+    val offset=dataStart.toLong()+view.optLong("byteOffset",0)
+    val len=view.getInt("byteLength")
+    require(len in 1..30_000_000 && offset>=dataStart && offset+len<=b.limit())
+    val bytes=ByteArray(len);b.duplicate().apply{position(offset.toInt());get(bytes)}
+    atlas.add(Atlas(parameter,bytes,srgb))
+   }
+   add("baseColorMap",pbr.optJSONObject("baseColorTexture"),true)
+   if(!diagnostic){add("metallicRoughnessMap",pbr.optJSONObject("metallicRoughnessTexture"),false);add("normalMap",mat.optJSONObject("normalTexture"),false)}
    b.rewind()
    val input=if(diagnostic)diagnosticGlb(b,doc,jsonSize) else b
    viewer.destroyModel()
+   clearExplicit()
+   pendingAtlas=atlas
    loadBuffer=input
    loading=true;loadStart=android.os.SystemClock.elapsedRealtime();lastLoadPercent=-1
    viewer.loadModelGlb(input);require(viewer.asset!=null){"Filament 无法解析模型"}
@@ -338,7 +393,7 @@ class MainActivity : Activity() {
    val tm=viewer.engine.transformManager
    baseTransform=tm.getTransform(tm.getInstance(viewer.asset!!.root),FloatArray(16))
    applyTransform();status.text="正在加载模型纹理";js("window.studioProgress&&studioProgress(0)");return true
-  } catch(e:Exception) { loading=false;viewer.destroyModel();loadBuffer=null;status.text="加载失败："+e.message;js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")");return false }
+  } catch(e:Exception) { loading=false;viewer.destroyModel();clearExplicit();loadBuffer=null;status.text="加载失败："+e.message;js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")");return false }
  }
  // Temporary diagnostic copy only. The normal rendering path never changes GLB bytes.
  private fun diagnosticGlb(source:ByteBuffer,doc:JSONObject,jsonSize:Int):ByteBuffer{
