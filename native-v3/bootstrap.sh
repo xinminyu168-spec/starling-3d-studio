@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 34
-  versionName '3.2'
+  versionCode 35
+  versionName '3.3'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -48,8 +48,7 @@ cat > app/src/main/AndroidManifest.xml <<'EOF'
  <uses-feature android:glEsVersion="0x00030000" android:required="true"/>
  <application android:label="星灵 · 3D 查看器" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:usesCleartextTraffic="false" android:largeHeap="true">
   <provider android:name="androidx.core.content.FileProvider" android:authorities="com.xs.character.viewer.updates" android:exported="false" android:grantUriPermissions="true"><meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/update_paths"/></provider>
-  <activity android:name="com.starling.filament.MainActivity" android:exported="false" android:configChanges="orientation|screenSize|keyboardHidden" android:screenOrientation="sensorLandscape"/>
-  <activity android:name="com.starling.filament.StudioActivity" android:exported="true" android:configChanges="orientation|screenSize|keyboardHidden">
+  <activity android:name="com.starling.filament.MainActivity" android:exported="true" android:configChanges="orientation|screenSize|keyboardHidden">
    <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
   </activity>
  </application>
@@ -92,47 +91,158 @@ class MainActivity : Activity() {
  private val ticker = object : Choreographer.FrameCallback {
   override fun doFrame(t: Long) {
    if (!active) return
+   if(spinning){yaw=(yaw+0.45f)%360f;applyTransform()}
    viewer.render(t)
-   if (t-lastCheck>30_000_000_000L) { lastCheck=t; sync() }
+   if (t-lastCheck>30_000_000_000L) { lastCheck=t; if(initialized&&!pausedResources)sync() }
    frames.postFrameCallback(this)
   }
  }
+ private lateinit var web:android.webkit.WebView
+ private var initialized=false
+ private var baseTransform:FloatArray?=null
+ private var yaw=0f
+ private var pitch=0f
+ private var zoom=1f
+ private var panX=0f
+ private var panY=0f
+ private var spinning=false
+ private var exp=1.04f
+ private var keyPower=1f
+ private var ambientPower=1f
+ private var rough=1.13f
+ private var normal=0.38f
+ private var flat=false
+ private var pausedResources=false
+ private val prefs by lazy { getSharedPreferences("studio_ui",0) }
+ private fun js(code:String){if(::web.isInitialized&&!isDestroyed)web.evaluateJavascript(code,null)}
  override fun onCreate(savedInstanceState: Bundle?) {
   super.onCreate(savedInstanceState)
-  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-  val root = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(17,19,24)) }
-  val top = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
-  fun button(label:String, act:()->Unit) { top.addView(Button(this).apply { text=label; setOnClickListener { act() } }) }
-  appUpdates=AppUpdates(this)
-  button("程序更新") { appUpdates.check(true) }
-  button("资源更新") { sync(manual=true) }
-  button("原工作台") { finish() }
-  button("高精度") { selected="full"; loadMode("full") }
-  button("轻量") { selected="mobile"; loadMode("mobile") }
-  button("导入 GLB") { val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type="*/*" }; startActivityForResult(i,7) }
-  button("同步光照") { sync() }
-  button("重置光照") { version=""; lighting(1f,1f,1f) }
-  status=TextView(this).apply { text="Filament · 等待本地模型"; setTextColor(Color.WHITE); textSize=13f; setPadding(12,0,12,0) }
-  top.addView(status, LinearLayout.LayoutParams(0,-2,1f))
-  root.addView(top)
+  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or WindowManager.LayoutParams.FLAG_FULLSCREEN)
+  val frame=FrameLayout(this)
+  frame.setBackgroundColor(Color.rgb(16,20,27))
   surface=SurfaceView(this)
-  root.addView(surface, LinearLayout.LayoutParams(-1,0,1f))
-  setContentView(root)
+  frame.addView(surface,FrameLayout.LayoutParams(-1,-1))
+  web=android.webkit.WebView(this)
+  web.setBackgroundColor(Color.TRANSPARENT)
+  web.settings.javaScriptEnabled=true
+  web.settings.domStorageEnabled=true
+  web.settings.allowFileAccess=false
+  web.settings.allowContentAccess=false
+  web.settings.allowFileAccessFromFileURLs=false
+  web.settings.allowUniversalAccessFromFileURLs=false
+  web.addJavascriptInterface(Controls(),"Studio")
+  frame.addView(web,FrameLayout.LayoutParams(-1,-1))
+  setContentView(frame)
+  appUpdates=AppUpdates(this)
+  status=TextView(this)
+  status.addTextChangedListener(object:android.text.TextWatcher{
+   override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
+   override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){js("window.studioStatus&&studioStatus("+JSONObject.quote(s.toString())+")")}
+   override fun afterTextChanged(s:android.text.Editable?){}
+  })
   viewer=ModelViewer(surface)
-  surface.setOnTouchListener { _, e -> viewer.onTouchEvent(e); true }
   val engine=viewer.engine
   ibl=IndirectLight.Builder().irradiance(1,floatArrayOf(0.65f,0.68f,0.72f)).intensity(18000f).build(engine)
   viewer.scene.indirectLight=ibl
   viewer.scene.skybox=Skybox.Builder().color(0.017f,0.02f,0.027f,1f).build(engine)
-  viewer.view.ambientOcclusion=View.AmbientOcclusion.SSAO
-  viewer.view.antiAliasing=View.AntiAliasing.FXAA
-  viewer.view.renderQuality=viewer.view.renderQuality.apply { hdrColorBuffer=View.QualityLevel.HIGH }
+  viewer.view.ambientOcclusion=com.google.android.filament.View.AmbientOcclusion.SSAO
+  viewer.view.antiAliasing=com.google.android.filament.View.AntiAliasing.FXAA
+  viewer.view.renderQuality=viewer.view.renderQuality.apply { hdrColorBuffer=com.google.android.filament.View.QualityLevel.HIGH }
   viewer.view.dynamicResolutionOptions=viewer.view.dynamicResolutionOptions.apply { enabled=false }
   viewer.view.multiSampleAntiAliasingOptions=viewer.view.multiSampleAntiAliasingOptions.apply { enabled=true; sampleCount=4 }
   addLight(-0.6f,-0.45f,-0.5f,23000f)
   addLight(0.4f,-0.5f,0.7f,28000f)
-  val saved=File(filesDir,"character.glb")
-  if(saved.exists()) { selected="imported"; load(saved) } else loadMode("full")
+  web.webViewClient=object:android.webkit.WebViewClient(){
+   override fun shouldOverrideUrlLoading(view:android.webkit.WebView,request:android.webkit.WebResourceRequest)=true
+   override fun shouldInterceptRequest(view:android.webkit.WebView,request:android.webkit.WebResourceRequest):android.webkit.WebResourceResponse{
+    val u=request.url
+    val name=u.path?.removePrefix("/studio/")?:""
+    if(u.scheme!="https"||u.host!="appassets.androidplatform.net"||name !in listOf("viewer.html","reference.png"))return android.webkit.WebResourceResponse("text/plain","UTF-8",403,"Forbidden",emptyMap(),java.io.ByteArrayInputStream(ByteArray(0)))
+    return try{
+     if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
+     else {
+      val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
+      val ui=original.substringBefore("<script").replace("V2.3","V3.3").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
+      val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
+      android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
+     }
+    }catch(e:Exception){android.webkit.WebResourceResponse("text/plain","UTF-8",500,"Error",emptyMap(),java.io.ByteArrayInputStream("资源读取失败".toByteArray()))}
+   }
+   override fun onPageFinished(view:android.webkit.WebView,url:String){if(initialized)js("window.studioReady&&studioReady()")}
+  }
+  Thread{
+   try{StudioAssets.prepare(this);runOnUiThread{
+    if(!isDestroyed){
+     initialized=true
+     pausedResources=prefs.getBoolean("paused",false)
+     selected=prefs.getString("model","full")?:"full"
+     if(selected!="mobile")selected="full"
+     web.loadUrl("https://appassets.androidplatform.net/studio/viewer.html")
+     loadMode(selected)
+     if(active){appUpdates.start();if(!pausedResources)sync()}
+    }
+   }}catch(e:Exception){runOnUiThread{if(!isDestroyed)android.app.AlertDialog.Builder(this).setMessage("本地素材准备失败："+e.message).setPositiveButton("确定",null).show()}}
+  }.start()
+ }
+ private fun applyTransform(){
+  val asset=viewer.asset?:return
+  val base=baseTransform?:return
+  val m=FloatArray(16);val result=FloatArray(16)
+  android.opengl.Matrix.setIdentityM(m,0)
+  android.opengl.Matrix.translateM(m,0,panX,panY,-4f)
+  android.opengl.Matrix.rotateM(m,0,pitch,1f,0f,0f)
+  android.opengl.Matrix.rotateM(m,0,yaw,0f,1f,0f)
+  android.opengl.Matrix.scaleM(m,0,zoom,zoom,zoom)
+  android.opengl.Matrix.translateM(m,0,0f,0f,4f)
+  android.opengl.Matrix.multiplyMM(result,0,m,0,base,0)
+  val tm=viewer.engine.transformManager
+  tm.setTransform(tm.getInstance(asset.root),result)
+ }
+ private fun applyMaterial(){
+  val asset=viewer.asset?:return
+  val rm=viewer.engine.renderableManager
+  for(entity in asset.entities){
+   val inst=rm.getInstance(entity);if(inst==0)continue
+   for(i in 0 until rm.getPrimitiveCount(inst)){
+    val mat=rm.getMaterialInstanceAt(inst,i)
+    if(mat.material.hasParameter("roughnessFactor"))mat.setParameter("roughnessFactor",rough.coerceIn(0.65f,1.6f))
+    if(mat.material.hasParameter("normalScale"))mat.setParameter("normalScale",normal)
+   }
+  }
+ }
+ private fun applyUiParams(j:JSONObject){
+  exp=j.optDouble("exposure",1.04).toFloat().coerceIn(.55f,1.7f)
+  keyPower=j.optDouble("key",1.0).toFloat().coerceIn(0f,2f)
+  ambientPower=j.optDouble("ambient",1.0).toFloat().coerceIn(0f,2f)
+  rough=j.optDouble("rough",1.13).toFloat().coerceIn(.65f,1.6f)
+  normal=j.optDouble("normal",.38).toFloat().coerceIn(0f,1f)
+  flat=j.optBoolean("flat",false)
+  lighting(exp,if(flat)0f else keyPower,if(flat)2f else ambientPower)
+  applyMaterial()
+ }
+ inner class Controls {
+  @android.webkit.JavascriptInterface fun send(command:String,data:String){
+   if(data.length>4096)return
+   runOnUiThread{
+    if(!initialized||isDestroyed)return@runOnUiThread
+    try{
+     val j=JSONObject(data)
+     when(command){
+      "ready"->{js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");}
+      "pose"->{yaw=j.optDouble("yaw",0.0).toFloat();pitch=j.optDouble("pitch",0.0).toFloat().coerceIn(-85f,85f);zoom=j.optDouble("zoom",1.0).toFloat().coerceIn(.3f,2.5f);panX=j.optDouble("x",0.0).toFloat().coerceIn(-1.5f,1.5f);panY=j.optDouble("y",0.0).toFloat().coerceIn(-1.5f,1.5f);spinning=j.optBoolean("spin",false);applyTransform()}
+      "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&m!=selected){selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
+      "quality"->{val q=j.optDouble("value",2.0);viewer.view.multiSampleAntiAliasingOptions=viewer.view.multiSampleAntiAliasingOptions.apply{enabled=q>1;sampleCount=if(q>=2)4 else 2};viewer.view.ambientOcclusion=if(q>1)com.google.android.filament.View.AmbientOcclusion.SSAO else com.google.android.filament.View.AmbientOcclusion.NONE}
+      "params"->applyUiParams(j)
+      "save"->{prefs.edit().putString("params",data).apply();status.text="渲染参数已保存"}
+      "restore"->{js("studioRestore("+JSONObject.quote(prefs.getString("params","")?:"")+")")}
+      "compare"->{val p=surface.layoutParams as FrameLayout.LayoutParams;p.leftMargin=if(j.optBoolean("show"))(web.width*.43f).toInt() else 0;surface.layoutParams=p}
+      "check"->{pausedResources=false;prefs.edit().putBoolean("paused",false).apply();appUpdates.check(true);sync(manual=true)}
+      "rollback"->{android.app.AlertDialog.Builder(this@MainActivity).setTitle("恢复内置资源？").setMessage("仅恢复内置模型和光照，保留原始素材。").setNegativeButton("取消",null).setPositiveButton("恢复"){_,_->for(m in listOf("full","mobile")){File(filesDir,"model-"+m+".glb").delete()};getSharedPreferences("native_resource_updates",0).edit().clear().apply();pausedResources=true;prefs.edit().putBoolean("paused",true).apply();loadMode(selected);js("studioDefaults()");status.text="已恢复内置资源，自动资源检测已暂停"}.show()}
+     }
+    }catch(e:Exception){status.text="操作失败："+e.message}
+   }
+  }
  }
  private fun loadMode(mode:String) {
   val f=File(filesDir,"model-"+mode+".glb")
@@ -162,7 +272,7 @@ class MainActivity : Activity() {
    val b=ByteBuffer.allocateDirect(n.toInt()).order(ByteOrder.LITTLE_ENDIAN)
    f.inputStream().channel.use { ch -> while(b.hasRemaining()) { if(ch.read(b)<0) error("文件不完整") } }
    b.flip(); require(b.getInt(0)==0x46546c67); require(b.getInt(4)==2); require(b.getInt(8)==n.toInt())
-   viewer.loadModelGlb(b); viewer.transformToUnitCube(); status.text="Filament · 已导入"; return true
+   viewer.loadModelGlb(b); require(viewer.asset!=null){"Filament 无法解析模型"}; viewer.transformToUnitCube(); val tm=viewer.engine.transformManager; baseTransform=tm.getTransform(tm.getInstance(viewer.asset!!.root),FloatArray(16)); applyTransform();applyMaterial();status.text="模型已载入";js("studioLoaded("+JSONObject.quote(selected)+")");return true
   } catch(e:Exception) { status.text="加载失败："+e.message; return false }
  }
  override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
@@ -184,7 +294,7 @@ class MainActivity : Activity() {
   }.start()
  }
  private fun sync(approved:String?=null,manual:Boolean=false) {
-  if(checking) return
+  if(!initialized||checking) return
   checking=true
   Thread {
    try {
@@ -236,7 +346,7 @@ class MainActivity : Activity() {
      checking=false
      if(isDestroyed){downloaded.values.forEach{it.delete()};return@runOnUiThread}
      var allOk=true
-     if(version!=v){lighting(e,k,a);version=v;status.text="已同步光照："+v}
+     if(version!=v){applyUiParams(p);js("studioCloud("+JSONObject.quote(p.toString())+")");version=v;status.text="已同步光照："+v}
      for((mode,tmp) in downloaded){
       val dst=File(filesDir,"model-"+mode+".glb");val backup=File(filesDir,"previous-"+mode+".glb")
       if(backup.exists())backup.delete()
@@ -251,84 +361,8 @@ class MainActivity : Activity() {
    } catch(e:Exception) { runOnUiThread { checking=false;if(manual)status.text="资源更新失败："+e.message } }
   }.start()
  }
- override fun onResume() { super.onResume(); active=true; frames.postFrameCallback(ticker); sync(); appUpdates.start() }
+ override fun onResume() { super.onResume(); active=true; frames.postFrameCallback(ticker); if(initialized){if(!pausedResources)sync();appUpdates.start()} }
  override fun onPause() { active=false; frames.removeFrameCallback(ticker); appUpdates.stop(); super.onPause() }
-}
-EOF
-# Avoid android.view.View name conflict with Filament View.
-sed -i 's/\bView\./com.google.android.filament.View./g' app/src/main/java/com/starling/filament/MainActivity.kt
-cat > app/src/main/java/com/starling/filament/StudioActivity.kt <<'EOF'
-package com.starling.filament
-import android.app.Activity
-import android.content.Intent
-import android.os.Bundle
-import android.graphics.Color
-import android.view.Gravity
-import android.view.WindowManager
-import android.webkit.WebView
-import android.widget.Button
-import android.widget.FrameLayout
-
-class StudioActivity : Activity() {
- private lateinit var web: WebView
- private lateinit var updates: AppUpdates
- override fun onCreate(savedInstanceState:Bundle?) {
-  super.onCreate(savedInstanceState)
-  window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,WindowManager.LayoutParams.FLAG_FULLSCREEN)
-  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-  updates=AppUpdates(this)
-  val frame=FrameLayout(this)
-  web=WebView(this)
-  web.webChromeClient=android.webkit.WebChromeClient()
-  web.settings.javaScriptEnabled=true
-  web.settings.domStorageEnabled=true
-  web.settings.allowFileAccess=false
-  web.settings.allowFileAccessFromFileURLs=false
-  web.settings.allowUniversalAccessFromFileURLs=false
-  frame.addView(web,FrameLayout.LayoutParams(-1,-1))
-  val button=Button(this).apply {
-   text="Filament 原生渲染"
-   textSize=12f
-   setTextColor(Color.WHITE)
-   setBackgroundColor(Color.rgb(30,70,115))
-   setOnClickListener { startActivity(Intent(this@StudioActivity,MainActivity::class.java)) }
-  }
-  val pos=FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM or Gravity.START)
-  pos.setMargins(8,0,0,36)
-  frame.addView(button,pos)
-  val check=Button(this).apply { text="检查更新"; textSize=12f; setOnClickListener { updates.check(true) } }
-  frame.addView(check,FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM or Gravity.END).apply { setMargins(0,0,8,36) })
-  setContentView(frame)
-  web.webViewClient=object:android.webkit.WebViewClient(){
-   override fun shouldInterceptRequest(view:WebView,request:android.webkit.WebResourceRequest):android.webkit.WebResourceResponse?{
-    val u=request.url
-    if(u.scheme!="https"||u.host!="appassets.androidplatform.net")return null
-    val name=u.path?.removePrefix("/studio/")?:""
-    val mime=when(name){"viewer.html"->"text/html";"reference.png"->"image/png";"full.glb","mobile.glb"->"model/gltf-binary";"studio_env.rgba"->"application/octet-stream";else->return android.webkit.WebResourceResponse("text/plain","UTF-8",404,"Not Found",emptyMap(),java.io.ByteArrayInputStream(ByteArray(0)))}
-    return try{
-     val asset=StudioAssets.file(this@StudioActivity,name)
-     val input=if(name=="viewer.html"){
-      val html=asset.readText(Charsets.UTF_8)
-       .replace("let activeUpdate=false;", "let dismissedVersion='';let activeUpdate=false;")
-       .replace("window.removeEventListener('message',receive);clearTimeout(timer);try{let d=e.data;", "if(e.data.offer){let d=e.data;if(quiet&&dismissedVersion===d.version){finish();return;}if(!window.confirm('发现资源更新 '+d.version+'\\n'+String(d.note||'')+'\\n点击确定后才下载。')){dismissedVersion=d.version;finish();\$('status').textContent='已暂缓更新';return;}f.contentWindow.postMessage({type:'starling-download',protocol:2,nonce,current:getstore('resourceVersion')||'builtin',approved:d.version},url.origin);return;}window.removeEventListener('message',receive);clearTimeout(timer);try{let d=e.data;")
-       .replace("type:'starling-check',nonce,current:", "type:'starling-check',protocol:2,nonce,current:")
-      java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8))
-     }else asset.inputStream()
-     android.webkit.WebResourceResponse(mime,if(name=="viewer.html")"UTF-8" else null,input)
-    }catch(e:Exception){android.webkit.WebResourceResponse("text/plain","UTF-8",404,"Not Found",emptyMap(),java.io.ByteArrayInputStream(ByteArray(0)))}
-   }
-  }
-  button.isEnabled=false
-  val progress=android.widget.TextView(this).apply{text="正在保留本地高精度模型…";setTextColor(Color.WHITE);gravity=Gravity.CENTER;setBackgroundColor(Color.rgb(17,19,24))}
-  frame.addView(progress,FrameLayout.LayoutParams(-1,-1))
-  Thread {
-   try{StudioAssets.prepare(this);runOnUiThread{if(!isDestroyed){frame.removeView(progress);button.isEnabled=true;web.loadUrl("https://appassets.androidplatform.net/studio/viewer.html")}}}
-   catch(e:Exception){runOnUiThread{if(!isDestroyed){progress.text="资源准备失败："+e.message+"。请检查存储空间后重新打开。"}}}
-  }.start()
- }
- override fun onPause(){updates.stop();web.onPause();super.onPause()}
- override fun onResume(){super.onResume();web.onResume();updates.start() }
- override fun onDestroy(){web.destroy();super.onDestroy()}
 }
 EOF
 mkdir -p app/src/main/res/xml
@@ -500,4 +534,40 @@ object StudioAssets {
   return f
  }
 }
+EOF
+cat > app/src/main/assets/studio-controls.js <<'EOF'
+'use strict';
+const $=id=>document.getElementById(id),cv=$('cv');
+const defaults={exposure:1.04,key:1,ambient:1,rough:1.13,normal:.38,skin:.55,reflect:.85};
+const names=Object.keys(defaults);
+function send(c,d={}){Studio.send(c,JSON.stringify(d))}
+let yaw=0,pitch=0,zoom=1,x=0,y=0,spin=false,compare=false;
+function pose(){send('pose',{yaw,pitch,zoom,x,y,spin})}
+function clamp(n,a,b){return Math.max(a,Math.min(b,n))}
+function view(a){yaw=a;pitch=0;zoom=1;x=y=0;spin=false;$('spin').textContent='自动旋转';pose()}
+let pointers=new Map(),queued=false;
+function queue(){if(!queued){queued=true;requestAnimationFrame(()=>{queued=false;pose()})}}
+cv.addEventListener('pointerdown',e=>{cv.setPointerCapture(e.pointerId);pointers.set(e.pointerId,[e.clientX,e.clientY]);spin=false;$('spin').textContent='自动旋转';queue()});
+cv.addEventListener('pointermove',e=>{let old=pointers.get(e.pointerId);if(!old)return;let now=[e.clientX,e.clientY],other=[...pointers.entries()].find(([id])=>id!==e.pointerId);if(other){let a=other[1],d0=Math.hypot(old[0]-a[0],old[1]-a[1]),d1=Math.hypot(now[0]-a[0],now[1]-a[1]);if(d0>3&&d1>3)zoom=clamp(zoom*d1/d0,.3,2.5);x=clamp(x+(now[0]-old[0])*.003,-1.5,1.5);y=clamp(y-(now[1]-old[1])*.003,-1.5,1.5)}else{yaw=(yaw+(now[0]-old[0])*.5)%360;pitch=clamp(pitch+(now[1]-old[1])*.5,-85,85)}pointers.set(e.pointerId,now);queue()});
+for(const e of ['pointerup','pointercancel','lostpointercapture'])cv.addEventListener(e,a=>pointers.delete(a.pointerId));
+$('front').onclick=()=>view(0);$('side').onclick=()=>view(90);$('back').onclick=()=>view(180);$('reset').onclick=()=>view(0);
+$('spin').onclick=()=>{spin=!spin;$('spin').textContent=spin?'停止旋转':'自动旋转';pose()};
+$('settings').onclick=()=>{$('panel').style.display=$('panel').style.display==='block'?'none':'block'};
+$('compare').onclick=()=>{compare=!compare;document.body.classList.toggle('compare',compare);$('ref').style.display=compare?'block':'none';send('compare',{show:compare})};
+function params(){let p={};for(const n of names){p[n]=Number($(n).value);$(n+'V').value=p[n].toFixed(2)}p.flat=$('light').value==='0';return p}
+function apply(p){for(const n of names)if(Number.isFinite(p[n]))$(n).value=p[n];if(typeof p.flat==='boolean')$('light').value=p.flat?'0':'1';send('params',params())}
+for(const n of names)$(n).oninput=()=>send('params',params());
+$('skin').disabled=true;$('skin').title='独立皮肤着色尚未迁移';$('reflect').disabled=true;$('reflect').title='独立 HDRI 反射尚未迁移';
+$('light').options[1].textContent='柔和平光';$('light').onchange=()=>send('params',params());
+$('quality').onchange=()=>send('quality',{value:Number($('quality').value)});
+$('save').onclick=()=>send('save',params());window.studioDefaults=()=>apply({...defaults,flat:false});$('defaults').onclick=studioDefaults;
+window.studioCloud=s=>{try{apply(JSON.parse(s));send('save',params())}catch(e){}};
+window.studioRestore=s=>{try{let p=JSON.parse(s||localStorage.getItem('renderParams')||'{}');apply(p)}catch(e){studioDefaults()}};
+window.studioStatus=s=>{$('status').textContent=s};
+window.studioModel=m=>{$('model').value=m;$('switchModel').textContent=m==='full'?'切换轻量版':'切换高精度'};
+window.studioLoaded=m=>{studioModel(m);$('msg').style.display='none';$('modelinfo').textContent=m==='full'?'离线高精度模型 · 4K':'离线轻量模型 · 2K'};
+function change(m){studioModel(m);$('msg').style.display='block';$('msg').textContent='正在加载模型…';send('model',{mode:m})}
+$('model').onchange=()=>change($('model').value);$('switchModel').onclick=()=>change($('model').value==='full'?'mobile':'full');
+$('endpoint').value='https://xinminyu168-spec.github.io/starling-3d-studio/';$('endpoint').readOnly=true;$('check').onclick=()=>send('check');$('rollback').onclick=()=>send('rollback');
+window.studioReady=()=>{send('ready');send('restore');send('quality',{value:2})};studioReady();$('msg').style.display='none';
 EOF
