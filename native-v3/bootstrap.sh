@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 60
-  versionName '5.8'
+  versionCode 61
+  versionName '5.9'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -104,6 +104,8 @@ class MainActivity : Activity() {
  private var loading=false
  private var exportBusy=false
  private var maxPresetPending=false
+ private var eyePreparing=false
+ private var eyeActive=false
  private var lightProfile=0
  private var advancedMask=0
  private var loadStart=0L
@@ -410,6 +412,7 @@ class MainActivity : Activity() {
  }
  private fun fallbackRegion(reason:String):Boolean{
   if(!regionModel)return false
+  if(eyeActive){eyeActive=false;js("window.studioIris&&studioIris(false)");if(loadAsset("native_full.glb"))return true}
   regionModel=false
   status.text="分区加载失败，恢复原模型："+reason
   return loadAsset("full.glb")
@@ -426,6 +429,8 @@ class MainActivity : Activity() {
     status.text="显式纹理绑定失败："+e.message;js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")");return
    }
    applyStudioLook()
+   js("window.studioIris&&studioIris("+eyeActive+")")
+   if(eyeActive)modelAudit+="\n虹膜试验：69 个候选面 · 原模型未覆盖"
    val presetReport=if(maxPresetPending){maxPresetPending=false;"最高画质 · 原 PBR 安全模式；请逐项测试高级材质"}else null
    status.text=presetReport?:if(diagnostic)"仅色彩图诊断 · 已加载" else if(cinematic)"影视渲染 · 纹理绑定完成" else "保真渲染 · 纹理绑定完成"
    js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")
@@ -534,7 +539,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V5.8").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V5.9").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -609,7 +614,7 @@ class MainActivity : Activity() {
    if(data.length>4096)return
    runOnUiThread{
     if(!initialized||isDestroyed)return@runOnUiThread
-    if(exportBusy&&command!="ready")return@runOnUiThread
+    if((exportBusy||eyePreparing)&&command!="ready")return@runOnUiThread
     try{
      val j=JSONObject(data)
      when(command){
@@ -655,6 +660,7 @@ class MainActivity : Activity() {
       "export"->chooseExport()
       "maximum"->maximumPreset()
       "portrait"->portraitPreset()
+      "irisTest"->toggleIrisTest()
       "lightProfile"->chooseLightProfile()
       "materialCompare"->compareMaterials()
       "safeMaterials"->restoreSafeMaterials()
@@ -673,12 +679,31 @@ class MainActivity : Activity() {
   }
  }
  private fun loadMode(mode:String) {
+  eyeActive=false
+  js("window.studioIris&&studioIris(false)")
   regionModel=!diagnostic&&mode=="full"&&cinematic&&refineAtlas
   if(regionModel){
    if(loadAsset("native_full.glb"))return
    regionModel=false
   }
   if(!loadAsset(if(mode=="mobile")"mobile.glb" else "full.glb"))maxPresetPending=false
+ }
+ private fun toggleIrisTest(){
+  if(loading||exportBusy||eyePreparing||diagnostic||!regionModel||viewer.asset==null){Toast.makeText(this,"请先加载高精度分区模型",Toast.LENGTH_SHORT).show();return}
+  if(eyeActive){loadMode(selected);return}
+  eyePreparing=true
+  status.text="正在生成虹膜试验模型 · 原始资源不变"
+  Thread{
+   val result=runCatching{IrisPatch.prepare(StudioAssets.file(this,"native_full.glb"),cacheDir)}
+   runOnUiThread{
+    eyePreparing=false
+    if(isDestroyed||isFinishing)return@runOnUiThread
+    result.fold(onSuccess={file->
+     eyeActive=true
+     if(!load(file)){eyeActive=false;loadMode(selected)}
+    },onFailure={e->status.text="虹膜试验未开启："+e.message})
+   }
+  }.start()
  }
  private fun loadAsset(name:String):Boolean {
   return try {
@@ -1220,9 +1245,10 @@ class MainActivity : Activity() {
    val pbr=mat.getJSONObject("pbrMetallicRoughness")
    val expectedNames=setOf("General","Skin_candidate","Hair_candidate","Blue_fabric_candidate","Painted_shell_candidate","Metal_candidate")
    if(regionModel){
-    require(materials.length()==6){"分区模型材质数量不一致"}
+    val expected=if(eyeActive)expectedNames+setOf("Iris_candidate_General","Iris_candidate_Skin_candidate") else expectedNames
+    require(materials.length()==expected.size){"分区模型材质数量不一致"}
     val names=(0 until materials.length()).map{materials.getJSONObject(it).getString("name")}.toSet()
-    require(names==expectedNames){"分区模型名称不一致"}
+    require(names==expected){"分区模型名称不一致"}
    }else require(materials.length()==1){"非分区模型须使用原始单图集"}
    for(i in 1 until materials.length()){
     val other=materials.getJSONObject(i)
@@ -1230,7 +1256,10 @@ class MainActivity : Activity() {
     for(key in listOf("baseColorTexture","metallicRoughnessTexture")){
      require(op.optJSONObject(key)?.toString()==pbr.optJSONObject(key)?.toString()){"不同材质图集不可共享："+key}
     }
-    require(other.optJSONObject("normalTexture")?.toString()==mat.optJSONObject("normalTexture")?.toString()){"法线绑定不一致"}
+    val nt=other.optJSONObject("normalTexture")
+    val iris=eyeActive&&other.optString("name") in setOf("Iris_candidate_General","Iris_candidate_Skin_candidate")
+    if(iris){require(nt?.optInt("index")==mat.getJSONObject("normalTexture").getInt("index")&&nt?.optInt("texCoord",0)==0&&nt?.optDouble("scale")==0.2){"虹膜法线绑定异常"}}
+    else require(nt?.toString()==mat.optJSONObject("normalTexture")?.toString()){"法线绑定不一致"}
    }
    val views=doc.getJSONArray("bufferViews")
    val dataStart=28+jsonSize
@@ -1467,6 +1496,65 @@ class AppUpdates(private val activity:Activity) {
  }
 }
 EOF
+cat > app/src/main/java/com/starling/filament/IrisPatch.kt <<'EOF'
+package com.starling.filament
+import java.io.File
+import java.io.RandomAccessFile
+import java.security.MessageDigest
+import java.util.zip.InflaterInputStream
+import android.util.Base64
+// Derived, opt-in cache. Never mutate the canonical resource.
+object IrisPatch {
+ private const val SOURCE="97c80d3a7f5b8e6412687ab30574fa4efdb5cd4db0a3115356de426ae411e379"
+ private const val OUTPUT="e77bea914c1c4f804a0d61f5b17167422e522f02085c772bf4100b8f5dd343e5"
+ private const val HEADER="eNrdl91uIjcUx1GlfYFe9RLNVS9oah9/jM1dNt20qbJhFVBUqYoiAw5xO8wgM+xmhXiCfZ++Q9+nD9DjYUImM4EN3VQr5SbCxufn8z8f5mSSDI6/abVa3//96dU/37Zav/Z7Z8vIzOc2j7rL6L31c5elUTeCAxJ1oolNrTd55nGnnxufuHTSvmDtkUnHbmxy257iH+9M0p4Zn7s8GK860XyEhlGXlJ/mUff3ZZRm4+ITuVxddjarZTS185vibGqmaBT1vJu4FJGjG+PNCPlRMAjHSouZd1O86325NHnu3XCRh+UyetfrnwxOemcF8qx3/vbwNOrSTjR489tRr3f+0xWJuoA+OpQwCiYc2aUKtFl1vhgoqkD6DEBZBcIzAOMqkD0DUFWB/BmAugqUzwCkpEqMV0UR3m2UBbquv5+Lok+w/GdD/9bmJknc6DxbTG6wkovLh2Zuj7Ik8wN7my+8DXt4kb0t6gcrtWbTPEYrx46xxkOHoff+zmKztwqd4qcmaTIgdJdJQp8dCIEHx9limNi+G9tx1M39woawlaL6f7r0atO2L0vbL8b5l6rtdbKwV9dm6N3opUp8Z1ya2/EVPu9J8lJFFjpeqrgT7+b32q6+1gNKDsgjKsmBFE8UCvvp/Mpv6v8kF38W3dRMytlquLi+tv7C2Q/rQclN7eDjLASjOPTjHzM7iUKIqgfFIwdnafOc3ApEJ/K172s35tnCj8qJ0kxnifXlqHb3Bd32BTz44nKzKmdPMzl2SRgxuzqGMHS4dLOhFc5JH7yZ9cP4wHW5GpSrADMjHC7mmW8GCz0dZdNZlto0XwsUFGTYXKR5IICUHIn5WvzFmyMWFdcj6QdywIniGrQCpmLBIe6EbOM+UK6kFJpxRSglNC6mmNswVj9mo2P8qGMiCRAmBHQeI9TTQv+D63UG7M2ABoM9xhAbhlCKaiE3jP7R4enheYMS76YwACG1rlPuUkE38V27LBvRUrv5oISMxTY8VPGgFG/g9WfwRABj2/D8gfeC6GauyW6+5lpq2MZXn40Opbv5FKjggmy7gGwu0JpiHC/3zC7lfGtmNUB83z5AONEhXsOPue1dXxf/EVPQBGIt98y5ZNsvJbrSsxRVxaR+KcXeJcVbdX9n9YEpHpeqRbk8tekkvwleM6pjGZQbPwkHGGYR7kU0APcWX8YBLpkWoB5yFFBGY/l0DMOmwRDU3AGGmwpq7rAdHCGZIg138N0DQfkOO0mpYoTX7heaKqrULrsY31NgUPObo3y+S6/U6A8LEXoYfk0Yi+HpejE4NI55TW+oJ0zKHhgmJMEKrGeRaLYPhTNFZT0YLMZfVan2wGDMsTVJPYcSt0kds2mZsl0qFhoTChDaatVut7/769Or1ydnrX8BeUggBA=="
+ private fun sha(f:File):String{
+  val md=MessageDigest.getInstance("SHA-256")
+  f.inputStream().use{input->val b=ByteArray(65536);while(true){val n=input.read(b);if(n<0)break;md.update(b,0,n)}}
+  return md.digest().joinToString(""){"%02x".format(it)}
+ }
+ @Synchronized fun prepare(src:File,dir:File):File{
+  require(src.length()==93046212L&&sha(src)==SOURCE){"原模型版本不匹配"}
+  val dst=File(dir,"iris-test-v1.glb")
+  if(dst.length()==93047080L&&sha(dst)==OUTPUT)return dst
+  require(dir.usableSpace>110_000_000L){"缓存空间不足"}
+  val tmp=File(dir,"iris-test-v1.part")
+  try{
+   val head=InflaterInputStream(Base64.decode(HEADER,Base64.DEFAULT).inputStream()).use{it.readBytes()}
+   require(head.size==4880)
+   RandomAccessFile(src,"r").use{input->
+    tmp.outputStream().buffered(65536).use{out->
+     out.write(head)
+     val buf=ByteArray(65536)
+     fun copy(from:Long,to:Long){
+      require(from>=0&&to>=from&&to<=93042200L)
+      input.seek(4012L+from)
+      var n=to-from
+      while(n>0){val c=minOf(n,buf.size.toLong()).toInt();input.readFully(buf,0,c);out.write(buf,0,c);n-=c}
+     }
+     var pos=0L
+     fun split(off:Long,count:Int,ids:IntArray){
+      require(ids.isNotEmpty()&&ids.all{it in 0 until count}&&ids.toList().zipWithNext().all{it.first<it.second})
+      copy(pos,off)
+      var start=0
+      for(i in ids){copy(off+start*12L,off+i*12L);start=i+1}
+      copy(off+start*12L,off+count*12L)
+      for(i in ids)copy(off+i*12L,off+(i+1)*12L)
+      pos=off+count*12L
+     }
+     split(69514376L,1075281,((520039..520065).toList()+listOf(520081,520084,520085,520086,520087,520088,520089,520090,520091,520092,520093,520094,520095,520097,520098,520099,520103,520150,520157,520159,520163)).toIntArray())
+     split(82417748L,95246,intArrayOf(39528,39530,39531,39532,39533,39534,39543,39544,39545,39546,39547,39548,39549,39550,39611,39612,39613,39614,39615,39616,39684))
+     copy(pos,93042200L)
+    }
+   }
+   require(tmp.length()==93047080L&&sha(tmp)==OUTPUT){"虹膜缓存校验失败"}
+   if(dst.exists())require(dst.delete())
+   require(tmp.renameTo(dst)){"虹膜缓存写入失败"}
+   return dst
+  }finally{tmp.delete()}
+ }
+}
+EOF
 cat > app/src/main/java/com/starling/filament/StudioAssets.kt <<'EOF'
 package com.starling.filament
 import android.content.Context
@@ -1596,6 +1684,8 @@ const poreRange=document.createElement('input');poreRange.type='range';poreRange
 window.studioPores=v=>{poreRange.value=v;poreValue.textContent=Number(v).toFixed(2)};poreRange.oninput=()=>{const v=Number(poreRange.value);studioPores(v);send('pores',{value:v})};
 const maxButton=document.createElement('button');maxButton.textContent='最高画质 · 安全 PBR';maxButton.style.margin='4px';maxButton.onclick=()=>send('maximum');$('check').insertAdjacentElement('afterend',maxButton);
 window.studioMaximum=()=>{if(window.studioLightProfile)studioLightProfile(0);studioLook(true);studioRefine(true);studioModel('full');$('quality').value='2';studioDefaults();send('quality',{value:2})};
+const irisButton=document.createElement('button');irisButton.textContent='虹膜反射 · 试验关闭';irisButton.style.margin='4px';irisButton.onclick=()=>send('irisTest');$('check').insertAdjacentElement('afterend',irisButton);
+window.studioIris=on=>{irisButton.textContent='虹膜反射 · '+(on?'试验开启':'试验关闭')};
 const portraitButton=document.createElement('button');portraitButton.textContent='肖像精修 · 单项对照';portraitButton.style.margin='4px';portraitButton.onclick=()=>send('portrait');$('check').insertAdjacentElement('afterend',portraitButton);
 const lightingButton=document.createElement('button');lightingButton.textContent='灯光校准 · 标准三点布光';lightingButton.style.margin='4px';lightingButton.onclick=()=>send('lightProfile');$('check').insertAdjacentElement('afterend',lightingButton);
 window.studioLightProfile=i=>{lightingButton.textContent='灯光校准 · '+['标准三点布光','柔和棚拍','轮廓造型','角色肖像'][i]};
