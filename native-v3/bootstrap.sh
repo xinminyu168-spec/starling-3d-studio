@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 58
-  versionName '5.6'
+  versionCode 59
+  versionName '5.7'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -534,7 +534,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V5.6").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V5.7").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -1163,12 +1163,17 @@ class MainActivity : Activity() {
  private fun lighting(e:Float,k:Float,a:Float) {
   viewer.camera.setExposure(16f,1f/100f,100f*e)
   val lm=viewer.engine.lightManager
-  if(mainLamp!=0)lm.setIntensity(lm.getInstance(mainLamp),(if(cinematic)46000f else 38000f)*k)
-  val fillRatio=when(lightProfile){1->1.30f;2->.65f;3->1.48f;else->1f}
-  val rimRatio=when(lightProfile){1->.72f;2->1.25f;3->.82f;else->1f}
+  // Portrait: redistribute light rather than raising global exposure.
+  if(mainLamp!=0){
+   val mi=lm.getInstance(mainLamp)
+   if(lightProfile==3&&!flat)lm.setDirection(mi,.38f,-.43f,-.82f)else lm.setDirection(mi,.58f,-.58f,-.58f)
+   lm.setIntensity(mi,(if(cinematic)46000f else 38000f)*k*(if(lightProfile==3&&!flat).84f else 1f))
+  }
+  val fillRatio=when(lightProfile){1->1.30f;2->.65f;3->1.65f;else->1f}
+  val rimRatio=when(lightProfile){1->.72f;2->1.25f;3->.72f;else->1f}
   if(fillLamp!=0){
    val fi=lm.getInstance(fillLamp)
-   if(lightProfile==3)lm.setDirection(fi,-.12f,-.12f,-1f)else lm.setDirection(fi,-.6f,-.22f,-.8f)
+   if(lightProfile==3)lm.setDirection(fi,-.22f,-.08f,-1f)else lm.setDirection(fi,-.6f,-.22f,-.8f)
    lm.setIntensity(fi,(if(cinematic)20000f else 30000f)*(if(flat)0f else fillRatio))
   }
   if(rimLamp!=0)lm.setIntensity(lm.getInstance(rimLamp),(if(cinematic)30000f else 12000f)*(if(flat)0f else rimRatio))
@@ -1576,7 +1581,7 @@ const poreRange=document.createElement('input');poreRange.type='range';poreRange
 window.studioPores=v=>{poreRange.value=v;poreValue.textContent=Number(v).toFixed(2)};poreRange.oninput=()=>{const v=Number(poreRange.value);studioPores(v);send('pores',{value:v})};
 const maxButton=document.createElement('button');maxButton.textContent='最高画质 · 安全 PBR';maxButton.style.margin='4px';maxButton.onclick=()=>send('maximum');$('check').insertAdjacentElement('afterend',maxButton);
 window.studioMaximum=()=>{if(window.studioLightProfile)studioLightProfile(0);studioLook(true);studioRefine(true);studioModel('full');$('quality').value='2';studioDefaults();send('quality',{value:2})};
-const portraitButton=document.createElement('button');portraitButton.textContent='角色质感精修 · 试用';portraitButton.style.margin='4px';portraitButton.onclick=()=>send('portrait');$('check').insertAdjacentElement('afterend',portraitButton);
+const portraitButton=document.createElement('button');portraitButton.textContent='角色质感精修 · V5.7';portraitButton.style.margin='4px';portraitButton.onclick=()=>send('portrait');$('check').insertAdjacentElement('afterend',portraitButton);
 const lightingButton=document.createElement('button');lightingButton.textContent='灯光校准 · 标准三点布光';lightingButton.style.margin='4px';lightingButton.onclick=()=>send('lightProfile');$('check').insertAdjacentElement('afterend',lightingButton);
 window.studioLightProfile=i=>{lightingButton.textContent='灯光校准 · '+['标准三点布光','柔和棚拍','轮廓造型','角色肖像'][i]};
 const safeButton=document.createElement('button');safeButton.textContent='恢复原始 PBR 材质';safeButton.style.margin='4px';safeButton.onclick=()=>send('safeMaterials');$('check').insertAdjacentElement('afterend',safeButton);
@@ -1643,18 +1648,18 @@ fragment {
         float fade = 1.0 - smoothstep(0.12, 0.42, max(footprint.x,footprint.y));
         float skinMask = (1.0 - smoothstep(0.02,0.15,mr.b)) * smoothstep(0.015,0.08,albedo.r-albedo.b);
         float pore = detail * fade * skinMask;
-        material.normal = normalize(vec3(n.xy * mix(0.55, 0.23, t) + slope * (0.055 * pore), max(n.z, 0.01)));
+        material.normal = normalize(vec3(n.xy * mix(0.55, 0.28, t) + slope * (0.04 * pore), max(n.z, 0.01)));
         prepareMaterial(material);
         material.baseColor = albedo;
         material.metallic = mr.b;
         // Soften highlights only on warm non-metal skin candidates; preserve authored atlas.
         float roughBase = clamp(mr.g * mix(0.92, 1.0, t), 0.08, 1.0);
-        material.roughness = clamp(mix(roughBase, max(roughBase, 0.52), skinMask * t) + 0.035 * envelope * pore, 0.08, 1.0);
-        material.reflectance = mix(0.45, 0.32, skinMask * t) - 0.02 * envelope * pore;
+        material.roughness = clamp(mix(roughBase, max(roughBase, 0.60), skinMask * t) + 0.035 * envelope * pore, 0.08, 1.0);
+        material.reflectance = mix(0.45, 0.27, skinMask * t) - 0.015 * envelope * pore;
         // A colour-derived scattering proxy, not measured physical skin thickness.
         float warm = smoothstep(0.015, 0.14, albedo.r-albedo.b) * skinMask;
         material.thickness = clamp(mix(0.90, 0.58, t) - 0.10 * warm * t, 0.45, 0.95);
-        material.subsurfaceColor = albedo.rgb * vec3(0.30, 0.13, 0.09) * t;
+        material.subsurfaceColor = albedo.rgb * vec3(0.34, 0.19, 0.13) * t * skinMask;
         material.subsurfacePower = 5.0;
     }
 }
@@ -1687,8 +1692,8 @@ fragment {
         material.baseColor = texture(materialParams_baseColorMap, uv);
         material.metallic = mr.b;
         float strandMask = 1.0 - smoothstep(0.04, 0.25, mr.b);
-        material.roughness = clamp(mix(mr.g, max(mr.g, 0.32), strandMask * 0.65), 0.08, 1.0);
-        material.reflectance = mix(0.5, 0.40, strandMask);
+        material.roughness = clamp(mix(mr.g, max(mr.g, 0.40), strandMask * 0.70), 0.08, 1.0);
+        material.reflectance = mix(0.5, 0.36, strandMask);
         material.anisotropy = clamp(materialParams.strength, 0.0, 0.65) * strandMask;
         material.anisotropyDirection = vec3(0.0, 1.0, 0.0);
     }
@@ -1725,12 +1730,12 @@ fragment {
         float fade = 1.0 - smoothstep(0.18, 0.48, max(footprint.x, footprint.y));
         vec2 weave = vec2(sin(grid.x * 6.2831853) * cos(grid.y * 3.1415927),
                           cos(grid.x * 3.1415927) * sin(grid.y * 6.2831853));
-        material.normal = normalize(vec3(n.xy * 0.62 + weave * (0.035 * mask * fade * t), max(n.z, 0.01)));
+        material.normal = normalize(vec3(n.xy * 0.62 + weave * (0.026 * mask * fade * t), max(n.z, 0.01)));
         prepareMaterial(material);
         material.baseColor = albedo;
         material.metallic = mr.b;
-        material.roughness = clamp(mix(mr.g, max(mr.g,0.68), mask*t), 0.08, 1.0);
-        material.reflectance = mix(0.5,0.35,mask*t);
+        material.roughness = clamp(mix(mr.g, max(mr.g,0.75), mask*t), 0.08, 1.0);
+        material.reflectance = mix(0.5,0.30,mask*t);
         material.sheenColor = sqrt(max(albedo.rgb, vec3(0.0))) * (0.08 * mask * t);
         material.sheenRoughness = 0.85;
     }
@@ -1764,10 +1769,10 @@ fragment {
         prepareMaterial(material);
         material.baseColor = albedo;
         material.metallic = mr.b;
-        material.roughness = clamp(mix(mr.g, max(mr.g,0.32),mask*t), 0.08, 1.0);
+        material.roughness = clamp(mix(mr.g, max(mr.g,0.40),mask*t), 0.08, 1.0);
         material.reflectance = 0.5;
-        material.clearCoat = 0.32 * mask * t;
-        material.clearCoatRoughness = 0.36;
+        material.clearCoat = 0.24 * mask * t;
+        material.clearCoatRoughness = 0.44;
     }
 }
 MAT
