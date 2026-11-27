@@ -618,7 +618,7 @@ class MainActivity : Activity() {
     try{
      val j=JSONObject(data)
      when(command){
-      "ready"->{js("window.studioPores&&studioPores("+poreStrength+")");js("window.studioSkin&&studioSkin("+skinSoftness+")");js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")}
+      "ready"->{js("window.studioIris&&studioIris("+(eyeActive&&!loading)+")");js("window.studioPores&&studioPores("+poreStrength+")");js("window.studioSkin&&studioSkin("+skinSoftness+")");js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")}
       "pose"->{yaw=j.optDouble("yaw",0.0).toFloat();pitch=j.optDouble("pitch",0.0).toFloat().coerceIn(-85f,85f);zoom=j.optDouble("zoom",1.0).toFloat().coerceIn(.3f,2.5f);panX=j.optDouble("x",0.0).toFloat().coerceIn(-1.5f,1.5f);panY=j.optDouble("y",0.0).toFloat().coerceIn(-1.5f,1.5f);spinning=j.optBoolean("spin",false);applyTransform()}
       "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&(m!=selected||viewer.asset==null)){diagnostic=false;selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
       "diagnose"->{
@@ -697,7 +697,7 @@ class MainActivity : Activity() {
    val result=runCatching{IrisPatch.prepare(StudioAssets.file(this,"native_full.glb"),cacheDir)}
    runOnUiThread{
     eyePreparing=false
-    if(isDestroyed||isFinishing)return@runOnUiThread
+    if(isDestroyed||isFinishing||loading||!regionModel||diagnostic||selected!="full")return@runOnUiThread
     result.fold(onSuccess={file->
      eyeActive=true
      if(!load(file)){eyeActive=false;loadMode(selected)}
@@ -732,8 +732,9 @@ class MainActivity : Activity() {
   js("window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")
  }
  private fun restoreSafeMaterials(){
-  if(loading||exportBusy){Toast.makeText(this,"请先完成当前操作",Toast.LENGTH_SHORT).show();return}
+  if(loading||exportBusy||eyePreparing){Toast.makeText(this,"请先完成当前操作",Toast.LENGTH_SHORT).show();return}
   maxPresetPending=false;advancedMask=0
+  if(eyeActive){loadMode(selected);return}
   disableSkinShader();disableHairShader();disableClothShader();disableShellShader()
   syncAdvancedUI()
   status.text="已恢复原 PBR 纹理采样路径，高精度模型及光照保留"
@@ -759,6 +760,7 @@ class MainActivity : Activity() {
   syncAdvancedUI()
  }
  private fun portraitPreset(){
+  if(eyeActive){Toast.makeText(this,"请先关闭虹膜反射试验，再进行原 PBR 肖像对照",Toast.LENGTH_LONG).show();return}
   if(loading||exportBusy||diagnostic||!regionModel||viewer.asset==null){
    Toast.makeText(this,"请先恢复正常高精度分区模型，再启用肖像精修",Toast.LENGTH_LONG).show();return
   }
