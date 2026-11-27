@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 51
-  versionName '4.9'
+  versionCode 52
+  versionName '5.0'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -422,7 +422,7 @@ class MainActivity : Activity() {
     status.text="显式纹理绑定失败："+e.message;js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")");return
    }
    applyStudioLook()
-   val presetReport=if(maxPresetPending){maxPresetPending=false;enableAdvancedMaterials()}else null
+   val presetReport=if(maxPresetPending){maxPresetPending=false;"最高画质 · 原 PBR 安全模式；请逐项测试高级材质"}else null
    status.text=presetReport?:if(diagnostic)"仅色彩图诊断 · 已加载" else if(cinematic)"影视渲染 · 纹理绑定完成" else "保真渲染 · 纹理绑定完成"
    js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")
   }else if(android.os.SystemClock.elapsedRealtime()-loadStart>60000L){
@@ -530,7 +530,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V4.9").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V5.0").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -642,6 +642,7 @@ class MainActivity : Activity() {
       "maximum"->maximumPreset()
       "lightProfile"->chooseLightProfile()
       "materialCompare"->compareMaterials()
+      "safeMaterials"->restoreSafeMaterials()
       "renderAudit"->showRenderAudit()
       "params"->applyUiParams(j)
       "save"->{prefs.edit().putString("params",data).putFloat("skinSoftness",skinSoftness).apply();status.text="渲染参数已保存"}
@@ -688,6 +689,14 @@ class MainActivity : Activity() {
  private fun syncAdvancedUI(){
   js("window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")
  }
+ private fun restoreSafeMaterials(){
+  if(loading||exportBusy){Toast.makeText(this,"请先完成当前操作",Toast.LENGTH_SHORT).show();return}
+  maxPresetPending=false;advancedMask=0
+  disableSkinShader();disableHairShader();disableClothShader();disableShellShader()
+  syncAdvancedUI()
+  status.text="已恢复原 PBR 纹理采样路径，高精度模型及光照保留"
+  Toast.makeText(this,status.text,Toast.LENGTH_SHORT).show()
+ }
  private fun compareMaterials(){
   if(!regionModel||loading||diagnostic){Toast.makeText(this,"需要高精度材质分区模型",Toast.LENGTH_SHORT).show();return}
   val mask=(if(sssInstance!=null)1 else 0) or (if(hairInstance!=null)2 else 0) or (if(clothInstance!=null)4 else 0) or (if(shellInstance!=null)8 else 0)
@@ -696,7 +705,8 @@ class MainActivity : Activity() {
    disableSkinShader();disableHairShader();disableClothShader();disableShellShader()
    status.text="对照：四套自定义材质已关闭，光照和构图不变"
   }else{
-   val restore=if(advancedMask==0)15 else advancedMask
+   if(advancedMask==0){Toast.makeText(this,"请先逐个开启已修正 UV 的高级材质进行验证",Toast.LENGTH_LONG).show();return}
+   val restore=advancedMask
    if(restore and 1!=0)installSkinShader()
    if(restore and 2!=0)installHairShader()
    if(restore and 4!=0)installClothShader()
@@ -721,7 +731,7 @@ class MainActivity : Activity() {
   val report="实时渲染尺寸："+vp.width+"×"+vp.height+"\n"+
    "模型："+selected+"；独立分区："+regionModel+"\n"+
    "高级材质："+n+"/4；动态分辨率：关闭\n"+
-   "高级材质为候选区域，眼球尚未独立重建。\n"+
+   "四套高级材质已统一 glTF UV 方向（flipUV=false），需逐项真机验证。眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
   android.app.AlertDialog.Builder(this).setTitle("渲染诊断").setMessage(report).setPositiveButton("关闭",null).show()
@@ -735,11 +745,7 @@ class MainActivity : Activity() {
   js("window.studioMaximum&&studioMaximum()")
   applyStudioLook()
   if(reload){maxPresetPending=true;loadMode("full")}
-  else{
-   status.text=enableAdvancedMaterials()
-   js("window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")
-   Toast.makeText(this,status.text,Toast.LENGTH_SHORT).show()
-  }
+  else{restoreSafeMaterials();status.text="最高画质 · 原 PBR 安全模式；请逐项测试高级材质"}
  }
  private fun chooseExport(){
   if(exportBusy||loading||viewer.asset==null||diagnostic){Toast.makeText(this,"请先完成正常模型加载",Toast.LENGTH_SHORT).show();return}
@@ -1334,18 +1340,19 @@ window.studioSkin=v=>{$('skin').value=v;$('skinV').value=Number(v).toFixed(2)};
 const look=document.createElement("button");look.textContent="影视级 / 保真";look.style.margin="4px";let cine=true;window.studioLook=on=>{cine=on;look.textContent=on?"影视级：开启（点击保真）":"保真：开启（点击影视级）"};look.onclick=()=>send("cinematic",{enabled:!cine});$("check").insertAdjacentElement("afterend",look);
 const polish=document.createElement("button");polish.style.margin="4px";let refine=true;window.studioRefine=on=>{refine=on;polish.textContent=on?"材质精修：开启":"材质精修：关闭"};studioRefine(true);polish.onclick=()=>send("refineAtlas",{enabled:!refine});$("check").insertAdjacentElement("afterend",polish);
 const face=document.createElement('button');face.textContent='面部近景';face.style.margin='4px';face.onclick=()=>{yaw=0;pitch=0;zoom=2.5;x=0;y=-1.24;spin=false;$('spin').textContent='自动旋转';pose();$('panel').style.display='none'};$('check').insertAdjacentElement('afterend',face);
-const sssButton=document.createElement('button');sssButton.style.margin='4px';sssButton.disabled=true;let sss=false;window.studioSSS=on=>{sss=on;const pores=$('studioPoresRange');if(pores)pores.disabled=!on;sssButton.textContent=on?'皮肤散射：开启':'皮肤散射：关闭（测试）'};studioSSS(false);sssButton.onclick=()=>send('sss',{enabled:!sss});$('check').insertAdjacentElement('afterend',sssButton);
-const hairButton=document.createElement('button');hairButton.style.margin='4px';hairButton.disabled=true;let hairOn=false;window.studioHair=on=>{hairOn=on;hairButton.textContent=on?'发束反射：开启':'发束反射：关闭（测试）'};studioHair(false);hairButton.onclick=()=>send('hair',{enabled:!hairOn});$('check').insertAdjacentElement('afterend',hairButton);
-const clothButton=document.createElement('button');clothButton.style.margin='4px';clothButton.disabled=true;let clothOn=false;window.studioCloth=on=>{clothOn=on;clothButton.textContent=on?'织物微表面：开启':'织物微表面：关闭（测试）'};studioCloth(false);clothButton.onclick=()=>send('cloth',{enabled:!clothOn});$('check').insertAdjacentElement('afterend',clothButton);
-const shellButton=document.createElement('button');shellButton.style.margin='4px';shellButton.disabled=true;let shellOn=false;window.studioShell=on=>{shellOn=on;shellButton.textContent=on?'外壳双层烤漆：开启':'外壳双层烤漆：关闭（测试）'};studioShell(false);shellButton.onclick=()=>send('shell',{enabled:!shellOn});$('check').insertAdjacentElement('afterend',shellButton);
+const sssButton=document.createElement('button');sssButton.style.margin='4px';sssButton.disabled=true;let sss=false;window.studioSSS=on=>{sss=on;const pores=$('studioPoresRange');if(pores)pores.disabled=!on;sssButton.textContent=on?'皮肤散射：开启':'皮肤散射：关闭（UV 修复测试）'};studioSSS(false);sssButton.onclick=()=>send('sss',{enabled:!sss});$('check').insertAdjacentElement('afterend',sssButton);
+const hairButton=document.createElement('button');hairButton.style.margin='4px';hairButton.disabled=true;let hairOn=false;window.studioHair=on=>{hairOn=on;hairButton.textContent=on?'发束反射：开启':'发束反射：关闭（UV 修复测试）'};studioHair(false);hairButton.onclick=()=>send('hair',{enabled:!hairOn});$('check').insertAdjacentElement('afterend',hairButton);
+const clothButton=document.createElement('button');clothButton.style.margin='4px';clothButton.disabled=true;let clothOn=false;window.studioCloth=on=>{clothOn=on;clothButton.textContent=on?'织物微表面：开启':'织物微表面：关闭（UV 修复测试）'};studioCloth(false);clothButton.onclick=()=>send('cloth',{enabled:!clothOn});$('check').insertAdjacentElement('afterend',clothButton);
+const shellButton=document.createElement('button');shellButton.style.margin='4px';shellButton.disabled=true;let shellOn=false;window.studioShell=on=>{shellOn=on;shellButton.textContent=on?'外壳双层烤漆：开启':'外壳双层烤漆：关闭（UV 修复测试）'};studioShell(false);shellButton.onclick=()=>send('shell',{enabled:!shellOn});$('check').insertAdjacentElement('afterend',shellButton);
 const poreWrap=document.createElement('label');poreWrap.style.display='block';poreWrap.style.margin='8px 4px';poreWrap.textContent='皮肤微细节 ';
 const poreValue=document.createElement('span');poreValue.textContent='0.35';poreWrap.appendChild(poreValue);
 const poreRange=document.createElement('input');poreRange.type='range';poreRange.id='studioPoresRange';poreRange.min='0';poreRange.max='1';poreRange.step='.01';poreRange.value='.35';poreRange.disabled=true;poreRange.style.width='100%';poreWrap.appendChild(poreRange);sssButton.insertAdjacentElement('afterend',poreWrap);
 window.studioPores=v=>{poreRange.value=v;poreValue.textContent=Number(v).toFixed(2)};poreRange.oninput=()=>{const v=Number(poreRange.value);studioPores(v);send('pores',{value:v})};
-const maxButton=document.createElement('button');maxButton.textContent='最高画质 · 全部高级材质';maxButton.style.margin='4px';maxButton.onclick=()=>send('maximum');$('check').insertAdjacentElement('afterend',maxButton);
+const maxButton=document.createElement('button');maxButton.textContent='最高画质 · 安全 PBR';maxButton.style.margin='4px';maxButton.onclick=()=>send('maximum');$('check').insertAdjacentElement('afterend',maxButton);
 window.studioMaximum=()=>{if(window.studioLightProfile)studioLightProfile(0);studioLook(true);studioRefine(true);studioModel('full');$('quality').value='2';studioDefaults();send('quality',{value:2})};
 const lightingButton=document.createElement('button');lightingButton.textContent='灯光校准 · 标准三点布光';lightingButton.style.margin='4px';lightingButton.onclick=()=>send('lightProfile');$('check').insertAdjacentElement('afterend',lightingButton);
 window.studioLightProfile=i=>{lightingButton.textContent='灯光校准 · '+['标准三点布光','柔和棚拍','轮廓造型'][i]};
+const safeButton=document.createElement('button');safeButton.textContent='恢复原始 PBR 材质';safeButton.style.margin='4px';safeButton.onclick=()=>send('safeMaterials');$('check').insertAdjacentElement('afterend',safeButton);
 const compareMaterials=document.createElement('button');compareMaterials.textContent='高级材质 / PBR 对照';compareMaterials.style.margin='4px';compareMaterials.onclick=()=>send('materialCompare');$('check').insertAdjacentElement('afterend',compareMaterials);
 const auditButton=document.createElement('button');auditButton.textContent='渲染诊断报告';auditButton.style.margin='4px';auditButton.onclick=()=>send('renderAudit');$('check').insertAdjacentElement('afterend',auditButton);
 const exportLock=document.createElement('div');exportLock.style.cssText='display:none;position:fixed;inset:0;background:rgba(0,0,0,.48);color:white;z-index:2147483647;align-items:center;justify-content:center;text-align:center;padding:24px;touch-action:none';exportLock.textContent='正在原生离屏渲染并写入相册，请保持 APP 在前台';document.body.appendChild(exportLock);
@@ -1373,6 +1380,7 @@ if [ "${STARLING_SKIP_IBL:-0}" != 1 ]; then
  cat > "$tmp/studio_skin.mat" <<'MAT'
 material {
     name : Studio_skin_SSS,
+    flipUV : false,
     shadingModel : subsurface,
     requires : [ uv0 ],
     parameters : [
@@ -1386,7 +1394,7 @@ material {
 }
 fragment {
     void material(inout MaterialInputs material) {
-        vec2 uv = getUV0();
+        highp vec2 uv = getUV0();
         float t = clamp(materialParams.softness, 0.0, 1.0);
         vec3 n = texture(materialParams_normalMap, uv).xyz * 2.0 - 1.0;
         vec4 albedo = texture(materialParams_baseColorMap, uv);
@@ -1427,6 +1435,7 @@ MAT
  cat > "$tmp/studio_hair.mat" <<'MAT'
 material {
     name : Studio_hair_anisotropic,
+    flipUV : false,
     shadingModel : lit,
     requires : [ uv0 ],
     parameters : [
@@ -1439,7 +1448,7 @@ material {
 }
 fragment {
     void material(inout MaterialInputs material) {
-        vec2 uv = getUV0();
+        highp vec2 uv = getUV0();
         vec3 n = texture(materialParams_normalMap, uv).xyz * 2.0 - 1.0;
         material.normal = normalize(vec3(n.xy * 0.48, max(n.z, 0.01)));
         prepareMaterial(material);
@@ -1458,6 +1467,7 @@ MAT
  cat > "$tmp/studio_cloth.mat" <<'MAT'
 material {
     name : Studio_cloth_sheen,
+    flipUV : false,
     shadingModel : lit,
     requires : [ uv0 ],
     parameters : [
@@ -1470,7 +1480,7 @@ material {
 }
 fragment {
     void material(inout MaterialInputs material) {
-        vec2 uv = getUV0();
+        highp vec2 uv = getUV0();
         vec3 n = texture(materialParams_normalMap, uv).xyz * 2.0 - 1.0;
         vec3 mr = texture(materialParams_metallicRoughnessMap, uv).rgb;
         vec4 albedo = texture(materialParams_baseColorMap, uv);
@@ -1497,6 +1507,7 @@ MAT
  cat > "$tmp/studio_shell.mat" <<'MAT'
 material {
     name : Studio_shell_clearcoat,
+    flipUV : false,
     shadingModel : lit,
     requires : [ uv0 ],
     parameters : [
@@ -1509,7 +1520,7 @@ material {
 }
 fragment {
     void material(inout MaterialInputs material) {
-        vec2 uv = getUV0();
+        highp vec2 uv = getUV0();
         vec3 n = texture(materialParams_normalMap, uv).xyz * 2.0 - 1.0;
         vec3 mr = texture(materialParams_metallicRoughnessMap, uv).rgb;
         vec4 albedo = texture(materialParams_baseColorMap, uv);
