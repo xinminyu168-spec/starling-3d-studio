@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 71
-  versionName '6.9'
+  versionCode 72
+  versionName '7.0'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -706,7 +706,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V6.9").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V7.0").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -1129,10 +1129,10 @@ class MainActivity : Activity() {
    "旧皮肤 Subsurface 已移除，替换为保真 lit PBR；四套候选材质仍须逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
-  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V6.9").setMessage(report)
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V7.0").setMessage(report)
    .setNegativeButton("关闭",null).setPositiveButton("复制报告"){_,_->
     val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V6.9",report))
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V7.0",report))
     Toast.makeText(this,"诊断报告已复制",Toast.LENGTH_SHORT).show()
    }.show()
  }
@@ -1149,19 +1149,37 @@ class MainActivity : Activity() {
  }
  private fun chooseExport(){
   if(exportBusy||loading||viewer.asset==null||diagnostic){Toast.makeText(this,"请先完成正常模型加载",Toast.LENGTH_SHORT).show();return}
-  val labels=arrayOf("2K · 长边 2560","4K · 长边 3840","8K · 长边 7680（高内存）")
-  android.app.AlertDialog.Builder(this).setTitle("超高清模型渲染输出").setItems(labels){_,i->
-   val edge=intArrayOf(2560,3840,7680)[i]
-   android.app.AlertDialog.Builder(this).setTitle("选择输出色深").setItems(arrayOf("标准 PNG · 每通道 8-bit · 保持影视后期","高色深 PNG · 每通道 16-bit · 独立色调映射")){_,fmt->exportScene(edge,fmt==1)}.setNegativeButton("取消",null).show()
-  }.setNegativeButton("取消",null).show()
+  val frames=arrayOf("当前构图 · 保留原视口","半身近景 · 中心 2×","面部特写 · 中心 3.5×","机械球特写 · 中心 3×")
+  android.app.AlertDialog.Builder(this).setTitle("选择渲染构图")
+   .setItems(frames){_,framing->
+    if(framing!=0&&(!regionModel||selected!="full"||!cinematic||qualityLevel<2.0)){
+     Toast.makeText(this,"特写需要先开启最高画质，并等待高精度模型加载完成",Toast.LENGTH_LONG).show();return@setItems
+    }
+    val start={
+     val labels=arrayOf("2K · 长边 2560","4K · 长边 3840","8K · 长边 7680（高内存）")
+     android.app.AlertDialog.Builder(this).setTitle("超高清模型渲染输出").setItems(labels){_,i->
+      val edge=intArrayOf(2560,3840,7680)[i]
+      android.app.AlertDialog.Builder(this).setTitle("选择输出色深").setItems(arrayOf("标准 PNG · 每通道 8-bit · 保持影视后期","高色深 PNG · 每通道 16-bit · 独立色调映射")){_,fmt->exportScene(edge,fmt==1,framing)}.setNegativeButton("取消",null).show()
+     }.setNegativeButton("取消",null).show()
+    }
+    if(framing==0)start() else android.app.AlertDialog.Builder(this).setTitle("独立特写相机 · "+frames[framing])
+     .setMessage("特写以当前画面中心为取景点，使用 4:5 画幅。请先平移或旋转，使需要观察的上半身、脸部或机械球位于屏幕中心。\n相机重新原生渲染，不裁切已有 PNG，也不移动模型。")
+     .setPositiveButton("中心已对准，继续"){_,_->start()}.setNegativeButton("返回调整",null).show()
+   }.setNegativeButton("取消",null).show()
  }
- private fun exportScene(longEdge:Int,highDepth:Boolean){
+ private fun exportScene(longEdge:Int,highDepth:Boolean,framing:Int=0){
   if(exportBusy||loading||viewer.asset==null||diagnostic)return
   if(android.os.Build.VERSION.SDK_INT<29){Toast.makeText(this,"相册导出需要 Android 10 或以上",Toast.LENGTH_LONG).show();return}
   val vp=viewer.view.viewport
   if(vp.width<=0||vp.height<=0)return
-  val w=if(vp.width>=vp.height)longEdge else ((longEdge.toDouble()*vp.width/vp.height).toInt().coerceAtLeast(2)/2)*2
-  val h=if(vp.height>=vp.width)longEdge else ((longEdge.toDouble()*vp.height/vp.width).toInt().coerceAtLeast(2)/2)*2
+  require(framing in 0..3)
+  val crop=floatArrayOf(1f,2f,3.5f,3f)[framing].toDouble()
+  if(framing!=0&&(!regionModel||selected!="full"||!cinematic||qualityLevel<2.0||highDepth)){
+   Toast.makeText(this,"特写验收请使用最高画质与标准 8-bit PNG",Toast.LENGTH_LONG).show();return
+  }
+  val sourceAspect=vp.width.toDouble()/vp.height
+  val w=if(framing!=0)((longEdge*0.8).toInt()/2)*2 else if(vp.width>=vp.height)longEdge else ((longEdge.toDouble()*vp.width/vp.height).toInt().coerceAtLeast(2)/2)*2
+  val h=if(framing!=0)longEdge else if(vp.height>=vp.width)longEdge else ((longEdge.toDouble()*vp.height/vp.width).toInt().coerceAtLeast(2)/2)*2
   val pixels=w.toLong()*h
   val am=getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
   val mem=android.app.ActivityManager.MemoryInfo();am.getMemoryInfo(mem)
@@ -1184,7 +1202,7 @@ class MainActivity : Activity() {
      exportBusy=false;js("window.studioExportLock&&studioExportLock(false)")
      status.text=if(limit<=0)"无法确认 GPU 最大渲染尺寸，未执行导出" else "GPU 最大渲染尺寸 "+limit+"，不支持所选输出"
      Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()
-    }else renderExport(w,h,longEdge,highDepth)
+    }else renderExport(w,h,longEdge,highDepth,crop,sourceAspect,framing)
    }
   }.start()
  }
@@ -1239,15 +1257,17 @@ class MainActivity : Activity() {
    android.opengl.EGL14.eglReleaseThread()
   }
  }
- private fun renderExport(w:Int,h:Int,longEdge:Int,highDepth:Boolean){
+ private fun renderExport(w:Int,h:Int,longEdge:Int,highDepth:Boolean,crop:Double,sourceAspect:Double,framing:Int){
   val engine=viewer.engine
   var color:Texture?=null;var depth:Texture?=null;var target:RenderTarget?=null
   var v:com.google.android.filament.View?=null
+  var cameraEntity=0
   var released=false
   fun release(){
    if(released)return
    released=true
    v?.let{it.setRenderTarget(null);it.setScene(null);it.setCamera(null);engine.destroyView(it)}
+   if(cameraEntity!=0){engine.destroyCameraComponent(cameraEntity);EntityManager.get().destroy(cameraEntity);cameraEntity=0}
    target?.let{engine.destroyRenderTarget(it)}
    depth?.let{engine.destroyTexture(it)}
    color?.let{engine.destroyTexture(it)}
@@ -1265,10 +1285,25 @@ class MainActivity : Activity() {
    val rt=RenderTarget.Builder().texture(RenderTarget.AttachmentPoint.COLOR,c).texture(RenderTarget.AttachmentPoint.DEPTH,d).build(engine)
    target=rt
    val off=engine.createView();v=off
-   off.setScene(viewer.scene);off.setCamera(viewer.camera);off.setRenderTarget(rt)
+   off.setScene(viewer.scene);off.setRenderTarget(rt)
+   if(framing==0)off.setCamera(viewer.camera) else {
+    cameraEntity=EntityManager.get().create()
+    val camera=engine.createCamera(cameraEntity)
+    camera.setModelMatrix(viewer.camera.getModelMatrix(FloatArray(16)))
+    val sx=crop*sourceAspect/(w.toDouble()/h);val sy=crop
+    fun magnify(p:DoubleArray):DoubleArray{
+     // Left-multiply by diag(sx,sy,1,1); preserve depth, perspective, and light geometry.
+     for(col in 0..3){p[col*4]*=sx;p[col*4+1]*=sy};return p
+    }
+    val projection=magnify(viewer.camera.getProjectionMatrix(DoubleArray(16)))
+    val culling=magnify(viewer.camera.getCullingProjectionMatrix(DoubleArray(16)))
+    camera.setCustomProjection(projection,culling,viewer.camera.getNear().toDouble(),viewer.camera.getCullingFar().toDouble())
+    camera.setExposure(16f,1f/100f,100f*exp)
+    off.setCamera(camera)
+   }
    off.setViewport(Viewport(0,0,w,h))
    configureLook(off,cinematic&&!diagnostic,true,longEdge,highDepth)
-   status.text="离屏渲染 "+w+"×"+h
+   status.text=(if(framing==0)"原构图渲染 " else "独立特写渲染 ")+w+"×"+h
    viewer.renderer.renderStandaloneView(off)
    val handler=android.os.Handler(mainLooper)
    val descriptor=Texture.PixelBufferDescriptor(data,Texture.Format.RGBA,if(highDepth)Texture.Type.FLOAT else Texture.Type.UBYTE,1,0,0,0,handler,Runnable{
@@ -1276,7 +1311,7 @@ class MainActivity : Activity() {
     if(isDestroyed){exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");return@Runnable}
     Thread{
      try{
-      if(highDepth){val saved=saveHighDepth(data,w,h);runOnUiThread{rememberExport(saved,w,h,16);exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");status.text="已保存 "+w+"×"+h+" 64-bit PNG";Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()};return@Thread}
+      if(highDepth){val saved=saveHighDepth(data,w,h);runOnUiThread{rememberExport(saved,w,h,16,framing);exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");status.text="已保存 "+w+"×"+h+" 64-bit PNG";Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()};return@Thread}
       val bitmap=android.graphics.Bitmap.createBitmap(w,h,android.graphics.Bitmap.Config.ARGB_8888)
       try{
        val row=IntArray(w);val rgba=data.asIntBuffer();var hasColor=false
@@ -1298,7 +1333,7 @@ class MainActivity : Activity() {
         contentResolver.openOutputStream(uri,"w")!!.use{require(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it))}
         values.clear();values.put(android.provider.MediaStore.Images.Media.IS_PENDING,0);contentResolver.update(uri,values,null,null)
        }catch(e:Throwable){contentResolver.delete(uri,null,null);throw e}
-       runOnUiThread{rememberExport(uri,w,h,8);exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");status.text="已保存 "+w+"×"+h+" PNG";Toast.makeText(this,"已保存到相册 / Starling",Toast.LENGTH_LONG).show()}
+       runOnUiThread{rememberExport(uri,w,h,8,framing);exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");status.text="已保存 "+w+"×"+h+" PNG";Toast.makeText(this,"已保存到相册 / Starling",Toast.LENGTH_LONG).show()}
       }finally{bitmap.recycle()}
      }catch(e:Throwable){runOnUiThread{exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");status.text="输出失败："+e.message;Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()}}
     }.start()
@@ -1362,8 +1397,8 @@ class MainActivity : Activity() {
   }catch(e:Throwable){contentResolver.delete(uri,null,null);throw e}
   return uri
  }
- private fun rememberExport(uri:android.net.Uri,w:Int,h:Int,depth:Int){
-  prefs.edit().putString("lastExportUri",uri.toString()).putInt("lastExportW",w).putInt("lastExportH",h).putInt("lastExportDepth",depth).apply()
+ private fun rememberExport(uri:android.net.Uri,w:Int,h:Int,depth:Int,framing:Int){
+  prefs.edit().putString("lastExportUri",uri.toString()).putInt("lastExportW",w).putInt("lastExportH",h).putInt("lastExportDepth",depth).putInt("lastExportFraming",framing).apply()
  }
  // Preserve the original PNG byte stream; never decode/recompress its image data.
  private fun packageExportProof(){
@@ -1372,6 +1407,7 @@ class MainActivity : Activity() {
   if(raw==null){Toast.makeText(this,"请先导出一张高清 PNG",Toast.LENGTH_LONG).show();return}
   val source=android.net.Uri.parse(raw)
   val w=prefs.getInt("lastExportW",0);val h=prefs.getInt("lastExportH",0);val bits=prefs.getInt("lastExportDepth",0)
+  val framing=prefs.getInt("lastExportFraming",0)
   if(source.scheme!="content"||source.authority!="media"||w<=0||h<=0||bits !in listOf(8,16))return
   exportBusy=true
   js("window.studioExportLock&&studioExportLock(true)")
@@ -1409,6 +1445,7 @@ class MainActivity : Activity() {
        zip.closeEntry()
        report.put("filename",name).put("width",w).put("height",h).put("bitsPerChannel",bits)
         .put("bytes",total).put("sha256",digest.digest().joinToString(""){"%02x".format(it)})
+        .put("framing",arrayOf("current","half_body_center_2x","face_center_3.5x","mechanical_center_3x")[framing.coerceIn(0,3)])
         .put("source","Original saved PNG bytes; IHDR verified; no image recompression")
        zip.putNextEntry(java.util.zip.ZipEntry("render-proof.json"))
        zip.write(report.toString(2).toByteArray(Charsets.UTF_8));zip.closeEntry()
