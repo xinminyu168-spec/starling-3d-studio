@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 79
-  versionName '7.7'
+  versionCode 80
+  versionName '7.8'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -92,6 +92,7 @@ class MainActivity : Activity() {
   override fun doFrame(t: Long) {
    if (!active) return
    if(spinning&&!exportBusy){yaw=(yaw+0.45f)%360f;applyTransform()}
+   if(viewer.view.viewport.width!=lastLensW||viewer.view.viewport.height!=lastLensH)applyLensProjection()
    viewer.render(t)
    loadProgress()
    if (t-lastCheck>30_000_000_000L) { lastCheck=t; if(initialized&&!pausedResources)sync() }
@@ -734,15 +735,20 @@ class MainActivity : Activity() {
   if(percent!=lastLoadPercent){lastLoadPercent=percent;js("window.studioProgress&&studioProgress("+percent+")")}
   if(p>=.9999f){
    loading=false;loadBuffer=null
-   try{bindAtlas()}catch(e:Exception){
+   try{
+    if(sourceBaseline&&!diagnostic){
+     pendingAtlas=emptyList()
+     modelAudit+="\n源 GLB 原生 glTF 材质加载：未进行显式图集重绑、粗糙度修饰、分区法线调整或自定义着色器替换。灯光及色调映射仍为当前工作台设置。"
+    }else bindAtlas()
+   }catch(e:Exception){
     if(fallbackRegion(e.message?:"纹理绑定异常"))return
     status.text="显式纹理绑定失败："+e.message;js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")");return
    }
    applyStudioLook()
    js("window.studioIris&&studioIris("+eyeActive+")")
    if(eyeActive)modelAudit+="\n虹膜试验：69 个候选面 · 原模型未覆盖"
-   val presetReport=if(maxPresetPending){maxPresetPending=false;"最高画质 · 均衡影视 + 原 PBR；高级材质保持关闭"}else null
-   status.text=presetReport?:if(eyeActive)"虹膜反射试验 · "+irisLastResult else if(diagnostic)"仅色彩图诊断 · 已加载" else if(cinematic)"影视渲染 · 纹理绑定完成" else "保真渲染 · 纹理绑定完成"
+   val presetReport=if(maxPresetPending){maxPresetPending=false;"最高画质 · 均衡影视 + 基础分区材质；自定义着色器关闭"}else null
+   status.text=presetReport?:if(eyeActive)"虹膜反射试验 · "+irisLastResult else if(diagnostic)"仅色彩图诊断 · 已加载" else if(sourceBaseline)"原始 GLB PBR · 未修改材质" else if(cinematic)"影视渲染 · 纹理绑定完成" else "保真渲染 · 纹理绑定完成"
    js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")
   }else if(android.os.SystemClock.elapsedRealtime()-loadStart>60000L){
    loading=false
@@ -752,6 +758,10 @@ class MainActivity : Activity() {
    js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")")
   }
  }
+ private var sourceBaseline=false
+ private var lensZoom=true
+ private var lastLensW=-1
+ private var lastLensH=-1
  private var baseTransform:FloatArray?=null
  private var yaw=0f
  private var pitch=0f
@@ -850,7 +860,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V7.7").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V7.8").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -896,18 +906,32 @@ class MainActivity : Activity() {
   val base=baseTransform?:return
   val m=FloatArray(16);val result=FloatArray(16)
   android.opengl.Matrix.setIdentityM(m,0)
-  android.opengl.Matrix.translateM(m,0,panX,panY,-4f)
+  android.opengl.Matrix.translateM(m,0,if(lensZoom)0f else panX,if(lensZoom)0f else panY,-4f)
   android.opengl.Matrix.rotateM(m,0,pitch,1f,0f,0f)
   android.opengl.Matrix.rotateM(m,0,yaw,0f,1f,0f)
-  android.opengl.Matrix.scaleM(m,0,zoom,zoom,zoom)
+  val scale=if(lensZoom)1f else zoom
+  android.opengl.Matrix.scaleM(m,0,scale,scale,scale)
   android.opengl.Matrix.translateM(m,0,0f,0f,4f)
   android.opengl.Matrix.multiplyMM(result,0,m,0,base,0)
   val tm=viewer.engine.transformManager
   tm.setTransform(tm.getInstance(asset.root),result)
   positionStudioSpots()
+  applyLensProjection()
  }
- private fun setEnvironment(a:Float,r:Float){
-  // Keep Filament's calibrated SH and prefiltered reflections together.
+ private fun applyLensProjection(){
+  val vp=viewer.view.viewport
+  if(vp.width<=0||vp.height<=0)return
+  lastLensW=vp.width;lastLensH=vp.height
+  val focal=28f*(if(lensZoom)zoom else 1f)
+  if(viewer.cameraFocalLength!=focal)viewer.cameraFocalLength=focal
+  val aspect=vp.width.toDouble()/vp.height
+  // Match pan approximately to the former 28 mm lens at the 4-unit pivot.
+  // Pan is now a screen-space optical shift, independent of object and lamps.
+  viewer.camera.setShift(if(lensZoom)panX*0.583333333/aspect else 0.0,if(lensZoom)panY*0.583333333 else 0.0)
+ }
+ private fun setEnvironment(a:Float){
+  // The installed IBL has coupled diffuse SH and prefiltered specular reflections.
+  // Do not advertise independent reflection strength without a calibrated split.
   ibl.intensity=22000f*a.coerceIn(.25f,2f)
  }
  private fun applyUiParams(j:JSONObject){
@@ -931,7 +955,7 @@ class MainActivity : Activity() {
     try{
      val j=JSONObject(data)
      when(command){
-      "ready"->{syncDetailAA();js("window.studioLightProfile&&studioLightProfile("+lightProfile+")");js("window.studioIris&&studioIris("+(eyeActive&&!loading)+");window.studioIrisStrength&&studioIrisStrength("+irisStrength+")");js("window.studioPores&&studioPores("+poreStrength+")");js("window.studioSkin&&studioSkin("+skinSoftness+")");js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")}
+      "ready"->{syncDetailAA();js("window.studioSourceBaseline&&studioSourceBaseline("+sourceBaseline+");window.studioLensZoom&&studioLensZoom("+lensZoom+")");js("window.studioLightProfile&&studioLightProfile("+lightProfile+")");js("window.studioIris&&studioIris("+(eyeActive&&!loading)+");window.studioIrisStrength&&studioIrisStrength("+irisStrength+")");js("window.studioPores&&studioPores("+poreStrength+")");js("window.studioSkin&&studioSkin("+skinSoftness+")");js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")}
       "pose"->{yaw=j.optDouble("yaw",0.0).toFloat();pitch=j.optDouble("pitch",0.0).toFloat().coerceIn(-85f,85f);zoom=j.optDouble("zoom",1.0).toFloat().coerceIn(.3f,2.5f);panX=j.optDouble("x",0.0).toFloat().coerceIn(-1.5f,1.5f);panY=j.optDouble("y",0.0).toFloat().coerceIn(-1.5f,1.5f);spinning=j.optBoolean("spin",false);applyTransform()}
       "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&(m!=selected||viewer.asset==null)){diagnostic=false;selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
       "diagnose"->{
@@ -939,7 +963,7 @@ class MainActivity : Activity() {
         .setMessage("引擎：Filament 1.56.0\n"+modelAudit+"\n加载进度："+lastLoadPercent.coerceAtLeast(0)+"%\n仅色彩图诊断使用当前规格的临时原始模型，绕过光照、金属度与法线，不修改原文件。进入后点击 UV 采样对照可切换 glTF 原材质与自定义采样器。")
         .setNegativeButton("关闭",null).setPositiveButton(if(diagnostic)"恢复原模型" else "仅色彩图诊断"){_,_->
          if(loading||exportBusy)return@setPositiveButton
-         diagnostic=!diagnostic;loadMode(selected)
+         sourceBaseline=false;js("window.studioSourceBaseline&&studioSourceBaseline(false)");diagnostic=!diagnostic;loadMode(selected)
         }.show()
       }
       "quality"->{qualityLevel=j.optDouble("value",2.0);applyStudioLook();syncDetailAA()}
@@ -994,6 +1018,8 @@ class MainActivity : Activity() {
       "lightProfile"->chooseLightProfile()
       "materialCompare"->compareMaterials()
       "safeMaterials"->restoreSafeMaterials()
+      "sourceBaseline"->toggleSourceBaseline()
+      "lensZoom"->{if(!loading){lensZoom=!lensZoom;applyTransform();js("window.studioLensZoom&&studioLensZoom("+lensZoom+")");status.text=if(lensZoom)"镜头缩放：固定模型比例与灯光位置" else "旧版缩放：仅供对照"}}
       "uvProbe"->toggleUvProbe()
       "uvAuto"->runUvComparison()
       "renderAudit"->showRenderAudit()
@@ -1011,7 +1037,7 @@ class MainActivity : Activity() {
  private fun loadMode(mode:String) {
   eyeActive=false
   js("window.studioIris&&studioIris(false)")
-  regionModel=!diagnostic&&mode=="full"&&cinematic&&refineAtlas
+  regionModel=!sourceBaseline&&!diagnostic&&mode=="full"&&cinematic&&refineAtlas
   if(regionModel){
    if(loadAsset("native_full.glb"))return
    regionModel=false
@@ -1063,8 +1089,8 @@ class MainActivity : Activity() {
  }
  private fun positionStudioSpots(){
   val lm=viewer.engine.lightManager
-  if(fillLamp!=0)lm.setPosition(lm.getInstance(fillLamp),panX+3.0f,panY+1.2f,0f)
-  if(rimLamp!=0)lm.setPosition(lm.getInstance(rimLamp),panX+2.3f,panY+2.8f,-7.6f)
+  if(fillLamp!=0)lm.setPosition(lm.getInstance(fillLamp),(if(lensZoom)0f else panX)+3.0f,(if(lensZoom)0f else panY)+1.2f,0f)
+  if(rimLamp!=0)lm.setPosition(lm.getInstance(rimLamp),(if(lensZoom)0f else panX)+2.3f,(if(lensZoom)0f else panY)+2.8f,-7.6f)
  }
  // Render a second view of the actual scene. Never capture or upscale the WebView.
  private fun enableAdvancedMaterials():String{
@@ -1077,13 +1103,23 @@ class MainActivity : Activity() {
  private fun syncAdvancedUI(){
   js("window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")
  }
+ private fun toggleSourceBaseline(){
+  if(loading||exportBusy||eyePreparing||viewer.asset==null){Toast.makeText(this,"请先完成模型加载",Toast.LENGTH_SHORT).show();return}
+  val next=!sourceBaseline
+  diagnostic=false;eyeActive=false;maxPresetPending=false;advancedMask=0
+  sourceBaseline=next
+  // Re-read original full.glb or mobile.glb instead of reusing modified material instances.
+  // Preserve current view transform, lens, exposure and lighting.
+  loadMode(selected)
+  js("window.studioSourceBaseline&&studioSourceBaseline("+sourceBaseline+")")
+ }
  private fun restoreSafeMaterials(){
   if(loading||exportBusy||eyePreparing){Toast.makeText(this,"请先完成当前操作",Toast.LENGTH_SHORT).show();return}
   maxPresetPending=false;advancedMask=0
   if(eyeActive){loadMode(selected);return}
   disableSkinShader();disableHairShader();disableClothShader();disableShellShader()
   syncAdvancedUI()
-  status.text="已恢复原 PBR 纹理采样路径，高精度模型及光照保留"
+  status.text="已关闭自定义着色器；基础精修可能仍存在。完全原始材质请使用源 GLB 对照"
   Toast.makeText(this,status.text,Toast.LENGTH_SHORT).show()
  }
  private fun compareMaterials(){
@@ -1279,6 +1315,8 @@ class MainActivity : Activity() {
   val report="实时渲染尺寸："+vp.width+"×"+vp.height+"\n"+
    "模型："+selected+"；独立分区："+regionModel+"\n"+
    "高级材质："+n+"/4；动态分辨率：关闭\n"+
+   "源 GLB 未修改材质："+sourceBaseline+"；镜头缩放："+lensZoom+"；焦距："+viewer.cameraFocalLength+" mm\n"+
+   "IBL：漫反射与镜面反射联动；独立反射调节未启用\n"+
    "近景清晰度："+(if(detailAA&&cinematic&&qualityLevel>=2&&!diagnostic)"B · 实时 MSAA 4×，2K/4K 标准导出关闭 FXAA" else "A · 原影视抗锯齿")+"；8K 保持原导出 AA 策略\n"+
    "最近 UV 检测："+uvResult+"\n"+
    "灯光：主光 DIRECTIONAL；补光与轮廓 SPOT；方案 "+lightProfile+"（A/D 为原始主光基准）\n"+
@@ -1288,23 +1326,24 @@ class MainActivity : Activity() {
    "旧皮肤 Subsurface 已移除，替换为保真 lit PBR；四套候选材质仍须逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
-  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V7.7").setMessage(report)
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V7.8").setMessage(report)
    .setNegativeButton("关闭",null).setPositiveButton("复制报告"){_,_->
     val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V7.7",report))
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V7.8",report))
     Toast.makeText(this,"诊断报告已复制",Toast.LENGTH_SHORT).show()
    }.show()
  }
  private fun maximumPreset(){
   if(exportBusy||loading){Toast.makeText(this,"请先完成当前操作",Toast.LENGTH_SHORT).show();return}
-  val reload=!regionModel||selected!="full"||!cinematic||!refineAtlas||diagnostic
+  val reload=sourceBaseline||!regionModel||selected!="full"||!cinematic||!refineAtlas||diagnostic
+  sourceBaseline=false;js("window.studioSourceBaseline&&studioSourceBaseline(false)")
   cinematic=true;refineAtlas=true;diagnostic=false;selected="full";qualityLevel=2.0;flat=false
   exp=1.04f;keyPower=1f;ambientPower=1f;lightProfile=4;detailAA=false;syncDetailAA()
   prefs.edit().putBoolean("cinematic",true).putBoolean("refineAtlas",true).putString("model","full").putInt("lightProfile",4).apply()
   js("window.studioMaximum&&studioMaximum()")
   applyStudioLook()
   if(reload){maxPresetPending=true;loadMode("full")}
-  else{restoreSafeMaterials();status.text="最高画质 · 均衡影视 + 原 PBR；高级材质保持关闭"}
+  else{restoreSafeMaterials();status.text="最高画质 · 均衡影视 + 基础分区材质；自定义着色器关闭"}
  }
  private fun chooseExport(){
   if(exportBusy||loading||viewer.asset==null||diagnostic){Toast.makeText(this,"请先完成正常模型加载",Toast.LENGTH_SHORT).show();return}
@@ -1704,7 +1743,7 @@ class MainActivity : Activity() {
   positionStudioSpots()
   if(fillLamp!=0)lm.setIntensityCandela(lm.getInstance(fillLamp),if(flat||diagnostic)0f else fillCd*k)
   if(rimLamp!=0)lm.setIntensityCandela(lm.getInstance(rimLamp),if(flat||diagnostic)0f else rimCd*k)
-  setEnvironment(a,if(flat)0f else reflectPower)
+  setEnvironment(a)
  }
  private fun load(f:File):Boolean {
   try {
@@ -2141,7 +2180,7 @@ $('compare').onclick=()=>{compare=!compare;document.body.classList.toggle('compa
 function params(){let p={};for(const n of names){p[n]=Number($(n).value);$(n+'V').value=p[n].toFixed(2)}p.flat=$('light').value==='0';return p}
 function apply(p){for(const n of names)if(Number.isFinite(p[n]))$(n).value=p[n];if(typeof p.flat==='boolean')$('light').value=p.flat?'0':'1';send('params',params())}
 for(const n of names)$(n).oninput=()=>send('params',params());
-for(const n of ['rough','normal']){$(n).disabled=true;$(n).title='保真模式：保留模型原始材质'};$('skin').disabled=true;$('skin').title='独立皮肤候选区微表面柔化，非 SSS';$('skin').parentElement.firstChild.textContent='皮肤细节柔化 ';$('reflect').disabled=true;$('reflect').title='恢复模式：环境反射与漫反射保持官方 IBL 默认比例';
+for(const n of ['rough','normal']){$(n).disabled=true;$(n).title='保真模式：保留模型原始材质'};$('skin').disabled=true;$('skin').title='独立皮肤候选区微表面柔化，非 SSS';$('skin').parentElement.firstChild.textContent='皮肤细节柔化 ';$('reflect').disabled=true;$('reflect').title='IBL 联动：当前不支持独立环境镜面反射控制';
 $('light').options[1].textContent='柔和平光';$('light').onchange=()=>send('params',params());
 $('quality').onchange=()=>send('quality',{value:Number($('quality').value)});
 $('save').onclick=()=>send('save',params());window.studioDefaults=()=>apply({...defaults,flat:false});$('defaults').onclick=studioDefaults;
@@ -2191,7 +2230,9 @@ const portraitButton=document.createElement('button');portraitButton.textContent
 const lightEvidenceButton=document.createElement('button');lightEvidenceButton.textContent='导出六档布光对照';lightEvidenceButton.style.margin='4px';lightEvidenceButton.onclick=()=>send('lightEvidence');$('check').insertAdjacentElement('afterend',lightEvidenceButton);
 const lightingButton=document.createElement('button');lightingButton.textContent='灯光校准 · 均衡影视';lightingButton.style.margin='4px';lightingButton.onclick=()=>send('lightProfile');$('check').insertAdjacentElement('afterend',lightingButton);
 window.studioLightProfile=i=>{lightingButton.textContent='灯光校准 · '+['标准主光','柔和棚拍','轮廓造型','角色肖像','均衡影视','轮廓增强'][i]};
-const safeButton=document.createElement('button');safeButton.textContent='恢复原始 PBR 材质';safeButton.style.margin='4px';safeButton.onclick=()=>send('safeMaterials');$('check').insertAdjacentElement('afterend',safeButton);
+const sourceButton=document.createElement('button');sourceButton.style.margin='4px';window.studioSourceBaseline=on=>{sourceButton.textContent=on?'源 GLB 原始材质：开启（点击返回精修）':'源 GLB 原始材质对照'};studioSourceBaseline(false);sourceButton.onclick=()=>send('sourceBaseline');$('check').insertAdjacentElement('afterend',sourceButton);
+const lensButton=document.createElement('button');lensButton.style.margin='4px';window.studioLensZoom=on=>{lensButton.textContent=on?'镜头缩放：开启（点击旧版对照）':'旧版模型缩放：开启（点击镜头缩放）'};studioLensZoom(true);lensButton.onclick=()=>send('lensZoom');$('check').insertAdjacentElement('afterend',lensButton);
+const safeButton=document.createElement('button');safeButton.textContent='关闭自定义材质（保留基础精修）';safeButton.style.margin='4px';safeButton.onclick=()=>send('safeMaterials');$('check').insertAdjacentElement('afterend',safeButton);
 const compareMaterials=document.createElement('button');compareMaterials.textContent='高级材质 / PBR 对照';compareMaterials.style.margin='4px';compareMaterials.onclick=()=>send('materialCompare');$('check').insertAdjacentElement('afterend',compareMaterials);
 const auditButton=document.createElement('button');auditButton.textContent='渲染诊断报告';auditButton.style.margin='4px';auditButton.onclick=()=>send('renderAudit');$('check').insertAdjacentElement('afterend',auditButton);
 const exportLock=document.createElement('div');exportLock.style.cssText='display:none;position:fixed;inset:0;background:rgba(0,0,0,.48);color:white;z-index:2147483647;align-items:center;justify-content:center;text-align:center;padding:24px;touch-action:none';exportLock.textContent='正在原生离屏渲染并写入相册，请保持 APP 在前台';document.body.appendChild(exportLock);
