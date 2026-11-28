@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 73
-  versionName '7.1'
+  versionCode 74
+  versionName '7.2'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -246,22 +246,24 @@ class MainActivity : Activity() {
  }
  private fun exportIrisEvidence()=exportEvidence(false)
  private fun exportMaterialEvidence()=exportEvidence(true)
- private fun exportEvidence(materials:Boolean,lights:Boolean=false){
+ private fun exportEvidence(materials:Boolean,lights:Boolean=false,aaTest:Boolean=false){
   val unavailable=loading||eyePreparing||exportBusy||!active||flat||diagnostic||!regionModel||viewer.asset==null
-  if(unavailable||(!lights&&(if(materials)eyeActive else !eyeActive||irisMaterials.isEmpty()))){
+  if(aaTest&&(unavailable||!cinematic||qualityLevel<2||selected!="full")){Toast.makeText(this,"请先开启最高画质并加载高精模型，再将目标部位放大到合适位置",Toast.LENGTH_LONG).show();return}
+  if(!aaTest&&(unavailable||(!lights&&(if(materials)eyeActive else !eyeActive||irisMaterials.isEmpty())))){
    Toast.makeText(this,if(lights)"请加载高精度分区模型并打开正常光照" else if(materials)"请关闭虹膜试验，加载高精度分区模型并打开正常光照" else "请先开启虹膜试验，完成加载并打开正常光照",Toast.LENGTH_LONG).show();return
   }
   val masks=intArrayOf(0,1,2,4,8,15)
-  val labels=if(lights)arrayOf("A  /  STANDARD","B  /  SOFT","C  /  RIM","D  /  PORTRAIT","E  /  BALANCED","F  /  RIM PLUS") else if(materials)arrayOf("A  /  PBR","B  /  SKIN PBR","C  /  HAIR","D  /  FABRIC","E  /  SHELL","F  /  ALL TEST") else arrayOf("A  /  0%","B  /  50%","C  /  100%")
+  val labels=if(aaTest)arrayOf("A / FXAA + MSAA 4x","B / MSAA 4x only") else if(lights)arrayOf("A  /  STANDARD","B  /  SOFT","C  /  RIM","D  /  PORTRAIT","E  /  BALANCED","F  /  RIM PLUS") else if(materials)arrayOf("A  /  PBR","B  /  SKIN PBR","C  /  HAIR","D  /  FABRIC","E  /  SHELL","F  /  ALL TEST") else arrayOf("A  /  0%","B  /  50%","C  /  100%")
   val previousLight=lightProfile
   val previousMask=evidenceMask()
   val vp=viewer.view.viewport
   if(vp.width<=0||vp.height<=0)return
-  val w=if(vp.width>=vp.height)1536 else (1536.0*vp.width/vp.height).toInt().coerceAtLeast(2)
-  val h=if(vp.height>=vp.width)1536 else (1536.0*vp.height/vp.width).toInt().coerceAtLeast(2)
+  val edge=if(aaTest)2560 else 1536
+  val w=if(vp.width>=vp.height)edge else (edge.toDouble()*vp.width/vp.height).toInt().coerceAtLeast(2)
+  val h=if(vp.height>=vp.width)edge else (edge.toDouble()*vp.height/vp.width).toInt().coerceAtLeast(2)
   val am=getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
   val mem=android.app.ActivityManager.MemoryInfo();am.getMemoryInfo(mem)
-  if(mem.lowMemory||mem.availMem-mem.threshold<w.toLong()*h*(if(materials||lights)144L else 104L)+256L*1024*1024){
+  if(mem.lowMemory||mem.availMem-mem.threshold<w.toLong()*h*(if(aaTest)120L else if(materials||lights)144L else 104L)+256L*1024*1024){
    Toast.makeText(this,"可用内存不足，未执行对照导出",Toast.LENGTH_LONG).show();return
   }
   val previous=irisStrength
@@ -272,13 +274,13 @@ class MainActivity : Activity() {
   var released=false
   exportBusy=true
   js("window.studioExportLock&&studioExportLock(true)")
-  status.text=if(lights)"正在采集固定构图六档布光对照" else if(materials)"正在采集固定构图六档材质对照" else "正在采集固定构图虹膜对照"
+  status.text=if(aaTest)"正在采集同构图抗锯齿 A/B 原图" else if(lights)"正在采集固定构图六档布光对照" else if(materials)"正在采集固定构图六档材质对照" else "正在采集固定构图虹膜对照"
   var restoreError=""
   fun release(){
    if(released)return
    released=true
    try{
-    if(lights){lightProfile=previousLight;lighting(exp,keyPower,ambientPower);js("window.studioLightProfile&&studioLightProfile("+lightProfile+")")}
+    if(aaTest){/* Only the temporary offscreen view changes. */} else if(lights){lightProfile=previousLight;lighting(exp,keyPower,ambientPower);js("window.studioLightProfile&&studioLightProfile("+lightProfile+")")}
     else if(materials){applyEvidenceMask(previousMask);syncAdvancedUI()}
     else{irisStrength=previous;if(eyeActive&&irisMaterials.isNotEmpty())applyIrisStrength()}
    }catch(e:Throwable){restoreError="；原材质恢复异常："+e.message;syncAdvancedUI()}
@@ -297,9 +299,9 @@ class MainActivity : Activity() {
    val rt=RenderTarget.Builder().texture(RenderTarget.AttachmentPoint.COLOR,c).texture(RenderTarget.AttachmentPoint.DEPTH,d).build(engine);target=rt
    val off=engine.createView();v=off
    off.setScene(viewer.scene);off.setCamera(viewer.camera);off.setRenderTarget(rt);off.setViewport(Viewport(0,0,w,h))
-   configureLook(off,cinematic,true,1536,false)
+   configureLook(off,cinematic,true,edge,false)
    fun capture(i:Int){
-    if(lights){lightProfile=i;lighting(exp,keyPower,ambientPower)} else if(materials)applyEvidenceMask(masks[i]) else {irisStrength=strengths[i];applyIrisStrength()}
+    if(aaTest){configureLook(off,true,true,edge,false,detailOverride=i==1)} else if(lights){lightProfile=i;lighting(exp,keyPower,ambientPower)} else if(materials)applyEvidenceMask(masks[i]) else {irisStrength=strengths[i];applyIrisStrength()}
     viewer.renderer.renderStandaloneView(off)
     viewer.renderer.readPixels(rt,0,0,w,h,Texture.PixelBufferDescriptor(buffers[i],Texture.Format.RGBA,Texture.Type.UBYTE,1,0,0,0,handler,Runnable{
      try{
@@ -308,8 +310,8 @@ class MainActivity : Activity() {
       release()
       Thread{
        try{
-        saveEvidenceSheet(buffers,w,h,labels,materials,lights)
-        runOnUiThread{finish(if(lights)"六档灯光对照已保存到相册 / Starling" else if(materials)"六档材质对照已保存到相册 / Starling" else "虹膜三档对照已保存到相册 / Starling")}
+        saveEvidenceSheet(buffers,w,h,labels,materials,lights,aaTest)
+        runOnUiThread{finish(if(aaTest)"抗锯齿 A/B 原图已保存到相册 / Starling，请以文件方式分享" else if(lights)"六档灯光对照已保存到相册 / Starling" else if(materials)"六档材质对照已保存到相册 / Starling" else "虹膜三档对照已保存到相册 / Starling")}
        }catch(e:Throwable){runOnUiThread{finish("对照输出失败："+e.message)}}
       }.start()
      }catch(e:Throwable){release();finish("对照采集失败："+e.message)}
@@ -319,7 +321,7 @@ class MainActivity : Activity() {
    capture(0)
   }catch(e:Throwable){release();finish("对照采集失败："+e.message)}
  }
- private fun saveEvidenceSheet(buffers:Array<ByteBuffer>,w:Int,h:Int,labels:Array<String>,materials:Boolean,lights:Boolean){
+ private fun saveEvidenceSheet(buffers:Array<ByteBuffer>,w:Int,h:Int,labels:Array<String>,materials:Boolean,lights:Boolean,aaTest:Boolean=false){
   val band=64
   val cols=if(materials||lights)2 else 1
   val sheet=android.graphics.Bitmap.createBitmap(w*cols,(h+band)*((buffers.size+cols-1)/cols),android.graphics.Bitmap.Config.ARGB_8888)
@@ -342,7 +344,7 @@ class MainActivity : Activity() {
     require(colored){"第 "+(i+1)+" 帧回读为空"}
    }
    val values=android.content.ContentValues().apply{
-    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME,(if(lights)"Starling_Lights_ABCDEF_" else if(materials)"Starling_Materials_ABCDEF_" else "Starling_Iris_ABC_")+System.currentTimeMillis()+".png")
+    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME,(if(aaTest)"Starling_Detail_AA_AB_" else if(lights)"Starling_Lights_ABCDEF_" else if(materials)"Starling_Materials_ABCDEF_" else "Starling_Iris_ABC_")+System.currentTimeMillis()+".png")
     put(android.provider.MediaStore.Images.Media.MIME_TYPE,"image/png")
     put(android.provider.MediaStore.Images.Media.RELATIVE_PATH,"Pictures/Starling")
     put(android.provider.MediaStore.Images.Media.IS_PENDING,1)
@@ -707,7 +709,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V7.1").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V7.2").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -801,6 +803,7 @@ class MainActivity : Activity() {
       }
       "quality"->{qualityLevel=j.optDouble("value",2.0);applyStudioLook();syncDetailAA()}
       "detailAA"->toggleDetailAA()
+      "detailEvidence"->exportEvidence(false,aaTest=true)
       "cinematic"->{val changed=cinematic!=j.optBoolean("enabled",true);cinematic=j.optBoolean("enabled",true);prefs.edit().putBoolean("cinematic",cinematic).apply();applyStudioLook();js("window.studioLook&&studioLook("+cinematic+")");if(changed&&refineAtlas&&!diagnostic)loadMode(selected)}
       "refineAtlas"->{val next=j.optBoolean("enabled",true);if(next!=refineAtlas){refineAtlas=next;prefs.edit().putBoolean("refineAtlas",next).apply();if(!diagnostic)loadMode(selected)};js("window.studioRefine&&studioRefine("+refineAtlas+")")}
       "sss"->{
@@ -1132,10 +1135,10 @@ class MainActivity : Activity() {
    "旧皮肤 Subsurface 已移除，替换为保真 lit PBR；四套候选材质仍须逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
-  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V7.1").setMessage(report)
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V7.2").setMessage(report)
    .setNegativeButton("关闭",null).setPositiveButton("复制报告"){_,_->
     val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V7.1",report))
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V7.2",report))
     Toast.makeText(this,"诊断报告已复制",Toast.LENGTH_SHORT).show()
    }.show()
  }
@@ -1489,9 +1492,9 @@ class MainActivity : Activity() {
   applyStudioLook();syncDetailAA()
   status.text=if(detailAA)"近景清晰度 B · 关闭 TAA，保留 4× MSAA" else "近景清晰度 A · 原影视 TAA"
  }
- private fun configureLook(v:com.google.android.filament.View,quality:Boolean,export:Boolean=false,longEdge:Int=0,highDepth:Boolean=false){
+ private fun configureLook(v:com.google.android.filament.View,quality:Boolean,export:Boolean=false,longEdge:Int=0,highDepth:Boolean=false,detailOverride:Boolean=detailAA){
   val msaa=!highDepth&&qualityLevel>1&&(!export||longEdge<=3840)
-  val clarity=detailAA&&quality&&qualityLevel>=2&&msaa
+  val clarity=detailOverride&&quality&&qualityLevel>=2&&msaa
   v.setPostProcessingEnabled(!highDepth)
   v.setColorGrading(if(quality)cinematicGrading else neutralGrading)
   v.setDynamicResolutionOptions(com.google.android.filament.View.DynamicResolutionOptions().apply{enabled=false})
@@ -2032,6 +2035,7 @@ const exportLock=document.createElement('div');exportLock.style.cssText='display
 window.studioExportLock=on=>{exportLock.style.display=on?'flex':'none';pointers.clear()};
 const detailAAButton=document.createElement('button');detailAAButton.textContent='近景清晰度 A · 影视';detailAAButton.style.margin='4px';detailAAButton.onclick=()=>send('detailAA');$('check').insertAdjacentElement('afterend',detailAAButton);
 window.studioDetailAA=(on,available)=>{detailAAButton.textContent=on&&available?'近景清晰度 B · MSAA':'近景清晰度 A · 影视'};
+const detailEvidenceButton=document.createElement('button');detailEvidenceButton.textContent='导出近景清晰度 A/B 原图';detailEvidenceButton.style.margin='4px';detailEvidenceButton.onclick=()=>send('detailEvidence');$('check').insertAdjacentElement('afterend',detailEvidenceButton);
 const proofButton=document.createElement('button');proofButton.textContent='原图验收 ZIP';proofButton.style.margin='4px';proofButton.onclick=()=>send('exportProof');$('check').insertAdjacentElement('afterend',proofButton);
 const exportButton=document.createElement('button');exportButton.textContent='超高清渲染输出';exportButton.style.margin='4px';exportButton.onclick=()=>send('export');$('check').insertAdjacentElement('afterend',exportButton);
 const uvButton=document.createElement('button');uvButton.style.margin='4px';uvButton.disabled=true;window.studioUvProbe=on=>{uvButton.textContent=on?'UV 对照 B · 点击回到 A':'UV 对照 A · 点击切换 B'};studioUvProbe(false);uvButton.onclick=()=>send('uvProbe');$('check').insertAdjacentElement('afterend',uvButton);
