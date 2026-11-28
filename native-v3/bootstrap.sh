@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 74
-  versionName '7.2'
+  versionCode 75
+  versionName '7.3'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -129,6 +129,7 @@ class MainActivity : Activity() {
  private val shellBindings=mutableListOf<SkinBinding>()
  private var clothShader:Material?=null
  private var clothInstance:MaterialInstance?=null
+ private var fabricDetail=0f
  private val clothBindings=mutableListOf<SkinBinding>()
  private var hairInstance:MaterialInstance?=null
  private val hairBindings=mutableListOf<SkinBinding>()
@@ -246,24 +247,27 @@ class MainActivity : Activity() {
  }
  private fun exportIrisEvidence()=exportEvidence(false)
  private fun exportMaterialEvidence()=exportEvidence(true)
- private fun exportEvidence(materials:Boolean,lights:Boolean=false,aaTest:Boolean=false){
+ private fun exportEvidence(materials:Boolean,lights:Boolean=false,aaTest:Boolean=false,fabricTest:Boolean=false){
   val unavailable=loading||eyePreparing||exportBusy||!active||flat||diagnostic||!regionModel||viewer.asset==null
   if(aaTest&&(unavailable||!cinematic||qualityLevel<2||selected!="full")){Toast.makeText(this,"请先开启最高画质并加载高精模型，再将目标部位放大到合适位置",Toast.LENGTH_LONG).show();return}
-  if(!aaTest&&(unavailable||(!lights&&(if(materials)eyeActive else !eyeActive||irisMaterials.isEmpty())))){
+  if(fabricTest&&(unavailable||eyeActive||!cinematic||qualityLevel<2||selected!="full")){Toast.makeText(this,"请先开启最高画质、关闭虹膜试验并对准服装",Toast.LENGTH_LONG).show();return}
+  if(!aaTest&&!fabricTest&&(unavailable||(!lights&&(if(materials)eyeActive else !eyeActive||irisMaterials.isEmpty())))){
    Toast.makeText(this,if(lights)"请加载高精度分区模型并打开正常光照" else if(materials)"请关闭虹膜试验，加载高精度分区模型并打开正常光照" else "请先开启虹膜试验，完成加载并打开正常光照",Toast.LENGTH_LONG).show();return
   }
   val masks=intArrayOf(0,1,2,4,8,15)
-  val labels=if(aaTest)arrayOf("A / FXAA + MSAA 4x","B / MSAA 4x only") else if(lights)arrayOf("A  /  STANDARD","B  /  SOFT","C  /  RIM","D  /  PORTRAIT","E  /  BALANCED","F  /  RIM PLUS") else if(materials)arrayOf("A  /  PBR","B  /  SKIN PBR","C  /  HAIR","D  /  FABRIC","E  /  SHELL","F  /  ALL TEST") else arrayOf("A  /  0%","B  /  50%","C  /  100%")
+  val labels=if(fabricTest)arrayOf("A / ORIGINAL PBR","B / PREVIOUS FABRIC","C / MICRO WEAVE") else if(aaTest)arrayOf("A / FXAA + MSAA 4x","B / MSAA 4x only") else if(lights)arrayOf("A  /  STANDARD","B  /  SOFT","C  /  RIM","D  /  PORTRAIT","E  /  BALANCED","F  /  RIM PLUS") else if(materials)arrayOf("A  /  PBR","B  /  SKIN PBR","C  /  HAIR","D  /  FABRIC","E  /  SHELL","F  /  ALL TEST") else arrayOf("A  /  0%","B  /  50%","C  /  100%")
   val previousLight=lightProfile
   val previousMask=evidenceMask()
+  val previousFabric=fabricDetail
+  val previousCloth=clothInstance!=null
   val vp=viewer.view.viewport
   if(vp.width<=0||vp.height<=0)return
-  val edge=if(aaTest)2560 else 1536
+  val edge=if(aaTest||fabricTest)2560 else 1536
   val w=if(vp.width>=vp.height)edge else (edge.toDouble()*vp.width/vp.height).toInt().coerceAtLeast(2)
   val h=if(vp.height>=vp.width)edge else (edge.toDouble()*vp.height/vp.width).toInt().coerceAtLeast(2)
   val am=getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
   val mem=android.app.ActivityManager.MemoryInfo();am.getMemoryInfo(mem)
-  if(mem.lowMemory||mem.availMem-mem.threshold<w.toLong()*h*(if(aaTest)120L else if(materials||lights)144L else 104L)+256L*1024*1024){
+  if(mem.lowMemory||mem.availMem-mem.threshold<w.toLong()*h*(if(fabricTest)144L else if(aaTest)120L else if(materials||lights)144L else 104L)+256L*1024*1024){
    Toast.makeText(this,"可用内存不足，未执行对照导出",Toast.LENGTH_LONG).show();return
   }
   val previous=irisStrength
@@ -274,13 +278,17 @@ class MainActivity : Activity() {
   var released=false
   exportBusy=true
   js("window.studioExportLock&&studioExportLock(true)")
-  status.text=if(aaTest)"正在采集同构图抗锯齿 A/B 原图" else if(lights)"正在采集固定构图六档布光对照" else if(materials)"正在采集固定构图六档材质对照" else "正在采集固定构图虹膜对照"
+  status.text=if(fabricTest)"正在采集织物三档近景对照" else if(aaTest)"正在采集同构图抗锯齿 A/B 原图" else if(lights)"正在采集固定构图六档布光对照" else if(materials)"正在采集固定构图六档材质对照" else "正在采集固定构图虹膜对照"
   var restoreError=""
   fun release(){
    if(released)return
    released=true
    try{
-    if(aaTest){/* Only the temporary offscreen view changes. */} else if(lights){lightProfile=previousLight;lighting(exp,keyPower,ambientPower);js("window.studioLightProfile&&studioLightProfile("+lightProfile+")")}
+    if(fabricTest){
+     fabricDetail=previousFabric
+     if(previousCloth){val msg=installClothShader();require(clothInstance!=null){msg};clothInstance?.setParameter("detailStrength",previousFabric)}else disableClothShader()
+     syncAdvancedUI()
+    } else if(aaTest){/* Only the temporary offscreen view changes. */} else if(lights){lightProfile=previousLight;lighting(exp,keyPower,ambientPower);js("window.studioLightProfile&&studioLightProfile("+lightProfile+")")}
     else if(materials){applyEvidenceMask(previousMask);syncAdvancedUI()}
     else{irisStrength=previous;if(eyeActive&&irisMaterials.isNotEmpty())applyIrisStrength()}
    }catch(e:Throwable){restoreError="；原材质恢复异常："+e.message;syncAdvancedUI()}
@@ -301,7 +309,13 @@ class MainActivity : Activity() {
    off.setScene(viewer.scene);off.setCamera(viewer.camera);off.setRenderTarget(rt);off.setViewport(Viewport(0,0,w,h))
    configureLook(off,cinematic,true,edge,false)
    fun capture(i:Int){
-    if(aaTest){configureLook(off,true,true,edge,false,detailOverride=i==1)} else if(lights){lightProfile=i;lighting(exp,keyPower,ambientPower)} else if(materials)applyEvidenceMask(masks[i]) else {irisStrength=strengths[i];applyIrisStrength()}
+    if(fabricTest){
+     if(i==0)disableClothShader() else {
+      fabricDetail=if(i==1)0f else 1f
+      val msg=installClothShader();require(clothInstance!=null){msg}
+      clothInstance?.setParameter("detailStrength",fabricDetail)
+     }
+    } else if(aaTest){configureLook(off,true,true,edge,false,detailOverride=i==1)} else if(lights){lightProfile=i;lighting(exp,keyPower,ambientPower)} else if(materials)applyEvidenceMask(masks[i]) else {irisStrength=strengths[i];applyIrisStrength()}
     viewer.renderer.renderStandaloneView(off)
     viewer.renderer.readPixels(rt,0,0,w,h,Texture.PixelBufferDescriptor(buffers[i],Texture.Format.RGBA,Texture.Type.UBYTE,1,0,0,0,handler,Runnable{
      try{
@@ -310,8 +324,8 @@ class MainActivity : Activity() {
       release()
       Thread{
        try{
-        saveEvidenceSheet(buffers,w,h,labels,materials,lights,aaTest)
-        runOnUiThread{finish(if(aaTest)"抗锯齿 A/B 原图已保存到相册 / Starling，请以文件方式分享" else if(lights)"六档灯光对照已保存到相册 / Starling" else if(materials)"六档材质对照已保存到相册 / Starling" else "虹膜三档对照已保存到相册 / Starling")}
+        saveEvidenceSheet(buffers,w,h,labels,materials,lights,aaTest,fabricTest)
+        runOnUiThread{finish(if(fabricTest)"织物三档近景对照已保存到相册 / Starling" else if(aaTest)"抗锯齿 A/B 原图已保存到相册 / Starling，请以文件方式分享" else if(lights)"六档灯光对照已保存到相册 / Starling" else if(materials)"六档材质对照已保存到相册 / Starling" else "虹膜三档对照已保存到相册 / Starling")}
        }catch(e:Throwable){runOnUiThread{finish("对照输出失败："+e.message)}}
       }.start()
      }catch(e:Throwable){release();finish("对照采集失败："+e.message)}
@@ -321,7 +335,7 @@ class MainActivity : Activity() {
    capture(0)
   }catch(e:Throwable){release();finish("对照采集失败："+e.message)}
  }
- private fun saveEvidenceSheet(buffers:Array<ByteBuffer>,w:Int,h:Int,labels:Array<String>,materials:Boolean,lights:Boolean,aaTest:Boolean=false){
+ private fun saveEvidenceSheet(buffers:Array<ByteBuffer>,w:Int,h:Int,labels:Array<String>,materials:Boolean,lights:Boolean,aaTest:Boolean=false,fabricTest:Boolean=false){
   val band=64
   val cols=if(materials||lights)2 else 1
   val sheet=android.graphics.Bitmap.createBitmap(w*cols,(h+band)*((buffers.size+cols-1)/cols),android.graphics.Bitmap.Config.ARGB_8888)
@@ -344,7 +358,7 @@ class MainActivity : Activity() {
     require(colored){"第 "+(i+1)+" 帧回读为空"}
    }
    val values=android.content.ContentValues().apply{
-    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME,(if(aaTest)"Starling_Detail_AA_AB_" else if(lights)"Starling_Lights_ABCDEF_" else if(materials)"Starling_Materials_ABCDEF_" else "Starling_Iris_ABC_")+System.currentTimeMillis()+".png")
+    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME,(if(fabricTest)"Starling_Fabric_ABC_" else if(aaTest)"Starling_Detail_AA_AB_" else if(lights)"Starling_Lights_ABCDEF_" else if(materials)"Starling_Materials_ABCDEF_" else "Starling_Iris_ABC_")+System.currentTimeMillis()+".png")
     put(android.provider.MediaStore.Images.Media.MIME_TYPE,"image/png")
     put(android.provider.MediaStore.Images.Media.RELATIVE_PATH,"Pictures/Starling")
     put(android.provider.MediaStore.Images.Media.IS_PENDING,1)
@@ -495,6 +509,20 @@ class MainActivity : Activity() {
   for(binding in hairBindings){val ri=rm.getInstance(binding.entity);if(ri!=0)rm.setMaterialInstanceAt(ri,binding.primitive,binding.original)}
   hairBindings.clear();hairInstance?.let{viewer.engine.destroyMaterialInstance(it)};hairInstance=null
  }
+ private fun chooseFabricDetail(){
+  if(loading||exportBusy||eyePreparing||diagnostic||!regionModel||eyeActive||viewer.asset==null){Toast.makeText(this,"请加载高精度分区模型并关闭虹膜试验",Toast.LENGTH_SHORT).show();return}
+  val labels=arrayOf("原织物微表面","近景织物 · 50%","近景织物 · 100%","关闭并恢复原 PBR")
+  android.app.AlertDialog.Builder(this).setTitle("近景织物细节").setItems(labels){_,i->
+   if(loading||exportBusy||eyePreparing||diagnostic||!regionModel||eyeActive)return@setItems
+   if(i==3){disableClothShader();fabricDetail=0f;status.text="已恢复原 PBR"}else{
+    fabricDetail=floatArrayOf(0f,.5f,1f)[i]
+    val msg=installClothShader()
+    clothInstance?.setParameter("detailStrength",fabricDetail)
+    status.text=if(clothInstance!=null)labels[i] else msg
+   }
+   syncAdvancedUI()
+  }.setNegativeButton("取消",null).show()
+ }
  private fun installClothShader():String{
   if(!regionModel||diagnostic||loading)return "请先加载高精度分区模型"
   if(clothInstance!=null)return "织物微表面已开启"
@@ -523,6 +551,7 @@ class MainActivity : Activity() {
    sampler.setAnisotropy(8f)
    for(name in listOf("baseColorMap","normalMap","metallicRoughnessMap"))mi.setParameter(name,boundAtlas[name]?:error("缺少织物微表面图集 "+name),sampler)
    mi.setParameter("strength",0.55f)
+   mi.setParameter("detailStrength",fabricDetail)
    for(binding in eligible){clothBindings.add(binding);rm.setMaterialInstanceAt(rm.getInstance(binding.entity),binding.primitive,mi)}
    clothInstance=mi
    return "织物微表面着色器 · "+eligible.size+" 个图元"
@@ -709,7 +738,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V7.2").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V7.3").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -804,6 +833,8 @@ class MainActivity : Activity() {
       "quality"->{qualityLevel=j.optDouble("value",2.0);applyStudioLook();syncDetailAA()}
       "detailAA"->toggleDetailAA()
       "detailEvidence"->exportEvidence(false,aaTest=true)
+      "fabricDetail"->chooseFabricDetail()
+      "fabricEvidence"->exportEvidence(false,fabricTest=true)
       "cinematic"->{val changed=cinematic!=j.optBoolean("enabled",true);cinematic=j.optBoolean("enabled",true);prefs.edit().putBoolean("cinematic",cinematic).apply();applyStudioLook();js("window.studioLook&&studioLook("+cinematic+")");if(changed&&refineAtlas&&!diagnostic)loadMode(selected)}
       "refineAtlas"->{val next=j.optBoolean("enabled",true);if(next!=refineAtlas){refineAtlas=next;prefs.edit().putBoolean("refineAtlas",next).apply();if(!diagnostic)loadMode(selected)};js("window.studioRefine&&studioRefine("+refineAtlas+")")}
       "sss"->{
@@ -1135,10 +1166,10 @@ class MainActivity : Activity() {
    "旧皮肤 Subsurface 已移除，替换为保真 lit PBR；四套候选材质仍须逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
-  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V7.2").setMessage(report)
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V7.3").setMessage(report)
    .setNegativeButton("关闭",null).setPositiveButton("复制报告"){_,_->
     val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V7.2",report))
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V7.3",report))
     Toast.makeText(this,"诊断报告已复制",Toast.LENGTH_SHORT).show()
    }.show()
  }
@@ -2011,6 +2042,8 @@ const face=document.createElement('button');face.textContent='面部近景';face
 const sssButton=document.createElement('button');sssButton.style.margin='4px';sssButton.disabled=true;let sss=false;window.studioSSS=on=>{sss=on;const pores=$('studioPoresRange');if(pores)pores.disabled=!on;sssButton.textContent=on?'皮肤 PBR 精修：开启':'皮肤 PBR 精修：关闭（保真测试）'};studioSSS(false);sssButton.onclick=()=>send('sss',{enabled:!sss});$('check').insertAdjacentElement('afterend',sssButton);
 const hairButton=document.createElement('button');hairButton.style.margin='4px';hairButton.disabled=true;let hairOn=false;window.studioHair=on=>{hairOn=on;hairButton.textContent=on?'发束反射：开启':'发束反射：关闭（保真测试）'};studioHair(false);hairButton.onclick=()=>send('hair',{enabled:!hairOn});$('check').insertAdjacentElement('afterend',hairButton);
 const clothButton=document.createElement('button');clothButton.style.margin='4px';clothButton.disabled=true;let clothOn=false;window.studioCloth=on=>{clothOn=on;clothButton.textContent=on?'织物微表面：开启':'织物微表面：关闭（保真测试）'};studioCloth(false);clothButton.onclick=()=>send('cloth',{enabled:!clothOn});$('check').insertAdjacentElement('afterend',clothButton);
+const fabricDetailButton=document.createElement('button');fabricDetailButton.textContent='近景织物精修 · 可调强度';fabricDetailButton.style.margin='4px';fabricDetailButton.onclick=()=>send('fabricDetail');$('check').insertAdjacentElement('afterend',fabricDetailButton);
+const fabricEvidenceButton=document.createElement('button');fabricEvidenceButton.textContent='导出织物三档近景对照';fabricEvidenceButton.style.margin='4px';fabricEvidenceButton.onclick=()=>send('fabricEvidence');$('check').insertAdjacentElement('afterend',fabricEvidenceButton);
 const shellButton=document.createElement('button');shellButton.style.margin='4px';shellButton.disabled=true;let shellOn=false;window.studioShell=on=>{shellOn=on;shellButton.textContent=on?'外壳双层烤漆：开启':'外壳双层烤漆：关闭（保真测试）'};studioShell(false);shellButton.onclick=()=>send('shell',{enabled:!shellOn});$('check').insertAdjacentElement('afterend',shellButton);
 const poreWrap=document.createElement('label');poreWrap.style.display='block';poreWrap.style.margin='8px 4px';poreWrap.textContent='皮肤微细节 ';
 const poreValue=document.createElement('span');poreValue.textContent='0.35';poreWrap.appendChild(poreValue);
@@ -2146,7 +2179,8 @@ material {
         { type : sampler2d, name : baseColorMap },
         { type : sampler2d, name : normalMap },
         { type : sampler2d, name : metallicRoughnessMap },
-        { type : float, name : strength }
+        { type : float, name : strength },
+        { type : float, name : detailStrength }
     ],
     doubleSided : true
 }
@@ -2160,12 +2194,24 @@ fragment {
         float dielectric = 1.0 - smoothstep(0.02, 0.12, mr.b);
         float blue = smoothstep(0.025,0.14,albedo.b-albedo.r);
         float mask = dielectric * max(smoothstep(0.45,0.62,mr.g), blue * smoothstep(0.25,0.48,mr.g));
-        vec2 grid = uv * 850.0;
-        vec2 footprint = fwidth(grid);
+        highp vec2 grid = uv * 850.0;
+        highp vec2 footprint = fwidth(grid);
         float fade = 1.0 - smoothstep(0.18, 0.48, max(footprint.x, footprint.y));
         vec2 weave = vec2(sin(grid.x * 6.2831853) * cos(grid.y * 3.1415927),
                           cos(grid.x * 3.1415927) * sin(grid.y * 6.2831853));
-        material.normal = normalize(vec3(n.xy * 0.62 + weave * (0.026 * mask * fade * t), max(n.z, 0.01)));
+        // Additional procedural detail: no change to atlas, colour or geometry.
+        // Band-limit each octave using screen-space footprint to avoid distant moire.
+        highp vec2 coarseGrid = uv * 425.0;
+        highp vec2 fineGrid = uv * 1700.0;
+        highp vec2 dc = fwidth(coarseGrid);
+        highp vec2 df = fwidth(fineGrid);
+        float fc = 1.0 - smoothstep(0.15, 0.45, max(dc.x,dc.y));
+        float ff = 1.0 - smoothstep(0.15, 0.45, max(df.x,df.y));
+        highp vec2 coarse = vec2(sin(coarseGrid.x*6.2831853)*cos(coarseGrid.y*3.1415927), cos(coarseGrid.x*3.1415927)*sin(coarseGrid.y*6.2831853));
+        highp vec2 fine = vec2(sin(fineGrid.x*6.2831853)*cos(fineGrid.y*3.1415927), cos(fineGrid.x*3.1415927)*sin(fineGrid.y*6.2831853));
+        float detail = clamp(materialParams.detailStrength,0.0,1.0);
+        vec2 extra = detail * mask * t * (coarse*0.065*fc + weave*0.085*fade + fine*0.045*ff);
+        material.normal = normalize(vec3(n.xy * 0.62 + weave * (0.026 * mask * fade * t) + extra, max(n.z, 0.01)));
         prepareMaterial(material);
         material.baseColor = albedo;
         material.metallic = mr.b;
