@@ -152,3 +152,22 @@ def test_normals_preserved(fixture_glb, tmp_path):
                         "--shards", "300", "--seed", "7"], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
     assert_same_normals(normal_signature(import_glb(out)), src_sig)
+
+
+def test_sample_seeds_tiny_areas_not_index_biased():
+    import fracture_character as fc
+    from mathutils import Vector
+    n = 2000
+    cents = [Vector((i, 0, 0)) for i in range(n)]
+    # uniform tiny areas: seeds must be spread over the whole index range
+    seeds = fc.sample_seeds(cents, [1e-6] * n, 200, 3)
+    idx = [int(v.x) for v in seeds]
+    low = sum(i < n // 2 for i in idx)
+    assert len(set(idx)) == 200
+    assert 60 <= low <= 140, low
+    # differing tiny areas: second half 3x larger -> clearly more picks, first half still present
+    areas = [1e-6] * (n // 2) + [3e-6] * (n // 2)
+    idx = [int(v.x) for v in fc.sample_seeds(cents, areas, 200, 3)]
+    low = sum(i < n // 2 for i in idx)
+    high = len(idx) - low
+    assert low >= 30 and high > 1.5 * low, (low, high)

@@ -8,6 +8,7 @@ Usage:
   blender -b --python fracture_character.py -- IN.glb OUT.glb [--shards 300] [--seed 7]
   python fracture_character.py -- IN.glb OUT.glb [--shards 300] [--seed 7]   # bpy module
 """
+import math
 import random
 import sys
 
@@ -25,7 +26,8 @@ def sample_seeds(centroids, areas, count, seed):
     weights = [max(a, 1e-12) for a in areas]
     chosen = []
     # Efraimidis-Spirakis weighted sampling without replacement.
-    keys = [(rng.random() ** (1.0 / w), i) for i, w in enumerate(weights)]
+    # Log-space keys: u**(1/w) underflows to 0.0 for tiny areas, so rank by log(u)/w instead.
+    keys = [(math.log(rng.random() or 5e-324) / w, i) for i, w in enumerate(weights)]
     keys.sort(reverse=True)
     chosen = [i for _, i in keys[:count]]
     chosen.sort()
