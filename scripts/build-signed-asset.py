@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build an opt-in Starling signed GLB asset pack using the existing permanent key."""
-import argparse, base64, getpass, hashlib, json, os, struct, subprocess, tempfile, zipfile
+import argparse, base64, re, getpass, hashlib, json, os, struct, subprocess, tempfile, zipfile
 from pathlib import Path
 
 CERT = "065d80ddf51e5a7cbc881900351ee355cdd8aa2447fee0a959d0391ecc02c7ba"
@@ -23,6 +23,50 @@ def check_model(p):
             raise ValueError("external buffers/images forbidden")
     return size
 
+def check_shards_model(p):
+    size = p.stat().st_size
+    if not 20 <= size <= 150_000_000:
+        raise ValueError("asset size out of range")
+    with p.open("rb") as f:
+        magic, ver, declared, jsize, jtype = struct.unpack("<5I", f.read(20))
+        if magic != 0x46546c67 or ver != 2 or declared != size or jtype != 0x4e4f534a or not 2 <= jsize <= 4_000_000 or jsize % 4:
+            raise ValueError("invalid GLB header")
+        doc = json.loads(f.read(jsize))
+    names = {m.get("name") for m in doc.get("materials", [])}
+    if not names or not names <= MATERIALS:
+        raise ValueError("shards1 materials must be a subset of the semantic8 names")
+    if not 50 <= len(doc.get("nodes", [])) <= 1000:
+        raise ValueError("shards1 node count out of range (50..1000)")
+    buffers = doc.get("buffers", [])
+    if len(buffers) != 1 or any("uri" in x for x in buffers + doc.get("images", [])):
+        raise ValueError("external buffers/images forbidden")
+    return size
+
+def make_payload(profile, model_size, model_sha, asset_id, character_id, source_sha):
+    d = {"schema":1,"package":"com.xs.character.viewer","sourceSha256":source_sha,"profile":profile,"minAppVersion":82,"id":asset_id,"size":model_size,"sha256":model_sha}
+    if profile == "shards1":
+        d["minAppVersion"] = 83
+        d["characterId"] = character_id
+    return json.dumps(d, separators=(",",":"), sort_keys=True).encode()
+
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("model", type=Path)
+    p.add_argument("output", type=Path)
+    p.add_argument("--id", type=int, required=True)
+    p.add_argument("--key", type=Path, required=True)
+    p.add_argument("--cert", type=Path, required=True)
+    p.add_argument("--profile", choices=["semantic8","shards1"], default="semantic8")
+    p.add_argument("--character-id")
+    p.add_argument("--source-sha256")
+    a = p.parse_args(argv)
+    if a.profile == "shards1":
+        if not a.character_id or not re.fullmatch(r"[a-z0-9-]{1,32}", a.character_id):
+            p.error("--character-id ([a-z0-9-]{1,32}) is required for shards1")
+        if not a.source_sha256 or not re.fullmatch(r"[0-9a-f]{64}", a.source_sha256):
+            p.error("--source-sha256 (64 lowercase hex) is required for shards1")
+    return a
+
 def sha(p):
     h = hashlib.sha256()
     with p.open("rb") as f:
@@ -34,20 +78,14 @@ def run(*args, **kwargs):
     return subprocess.run(args, check=True, **kwargs).stdout
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("model", type=Path)
-    p.add_argument("output", type=Path)
-    p.add_argument("--id", type=int, required=True)
-    p.add_argument("--key", type=Path, required=True)
-    p.add_argument("--cert", type=Path, required=True)
-    a = p.parse_args()
+    a = parse_args()
     if not 5 <= a.id <= 999999 or a.output.exists() or a.output.resolve() == a.model.resolve():
         raise ValueError("invalid ID or output already exists")
-    size = check_model(a.model)
+    size = check_shards_model(a.model) if a.profile == "shards1" else check_model(a.model)
     if sha(a.cert) != CERT:
         raise ValueError("certificate mismatch")
     digest = sha(a.model)
-    payload = json.dumps({"schema":1,"package":"com.xs.character.viewer","sourceSha256":SOURCE,"profile":"semantic8","minAppVersion":82,"id":a.id,"size":size,"sha256":digest}, separators=(",",":"), sort_keys=True).encode()
+    payload = make_payload(a.profile, size, digest, a.id, a.character_id, a.source_sha256 if a.profile == "shards1" else SOURCE)
     password = getpass.getpass("Existing signing backup password: ")
     # Password travels on stdin only; the decrypted key never touches disk.
     with tempfile.TemporaryDirectory() as tmp:
