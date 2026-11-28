@@ -870,7 +870,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V7.9").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V8.0").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -1373,10 +1373,10 @@ class MainActivity : Activity() {
    "旧皮肤 Subsurface 已移除，替换为保真 lit PBR；四套候选材质仍须逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
-  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V7.9").setMessage(report)
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V8.0").setMessage(report)
    .setNegativeButton("关闭",null).setPositiveButton("复制报告"){_,_->
     val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V7.9",report))
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V8.0",report))
     Toast.makeText(this,"诊断报告已复制",Toast.LENGTH_SHORT).show()
    }.show()
  }
@@ -2222,14 +2222,14 @@ object SignedAssets {
   val v=if(android.os.Build.VERSION.SDK_INT>=28)pkg.longVersionCode else pkg.versionCode.toLong()
   require(j.getInt("minAppVersion") in 82..v.toInt()){"需要更新 APP"}
   val id=j.getInt("id");val size=j.getLong("size");val hash=j.getString("sha256")
-  require(id in 5..999999&&size in 20..MAX&&hash.matches(Regex("[0-9a-f]{64}"))){"资产参数不合法"}
+  require(id in 5..999999&&size in 20L..MAX&&hash.matches(Regex("[0-9a-f]{64}"))){"资产参数不合法"}
   return Spec(id,size,hash)
  }
  fun read(c:Context,id:Int):Spec{
   require(id in 5..999999)
   return verified(c,meta(c,id).inputStream().use{small(it,32768)}).also{require(it.id==id)}
  }
- fun ids(c:Context):List<Int>=(dir(c).listFiles()?:emptyArray<File>()).mapNotNull{f->
+ fun ids(c:Context):List<Int> =(dir(c).listFiles()?:emptyArray<File>()).mapNotNull{f->
   Regex("candidate-([0-9]+)\\.signed\\.json").matchEntire(f.name)?.groupValues?.get(1)?.toIntOrNull()
  }.filter{id->runCatching{val s=read(c,id);model(c,id).length()==s.size}.getOrDefault(false)}.sorted()
  @Synchronized fun install(c:Context,input:InputStream):Int{
