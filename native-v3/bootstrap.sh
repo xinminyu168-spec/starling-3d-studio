@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 78
-  versionName '7.6'
+  versionCode 79
+  versionName '7.7'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -126,6 +126,7 @@ class MainActivity : Activity() {
  private var skinMicroDetail=0f
  private var skinOpticalDetail=0f
  private var hairShader:Material?=null
+ private var hairOpticalDetail=0f
  private var shellShader:Material?=null
  private var shellInstance:MaterialInstance?=null
  private var shellDetail=0f
@@ -250,17 +251,18 @@ class MainActivity : Activity() {
  }
  private fun exportIrisEvidence()=exportEvidence(false)
  private fun exportMaterialEvidence()=exportEvidence(true)
- private fun exportEvidence(materials:Boolean,lights:Boolean=false,aaTest:Boolean=false,fabricTest:Boolean=false,shellTest:Boolean=false,skinTest:Boolean=false,opticalTest:Boolean=false){
+ private fun exportEvidence(materials:Boolean,lights:Boolean=false,aaTest:Boolean=false,fabricTest:Boolean=false,shellTest:Boolean=false,skinTest:Boolean=false,opticalTest:Boolean=false,hairTest:Boolean=false){
   val unavailable=loading||eyePreparing||exportBusy||!active||flat||diagnostic||!regionModel||viewer.asset==null
   if(aaTest&&(unavailable||!cinematic||qualityLevel<2||selected!="full")){Toast.makeText(this,"请先开启最高画质并加载高精模型，再将目标部位放大到合适位置",Toast.LENGTH_LONG).show();return}
   if(fabricTest&&(unavailable||eyeActive||!cinematic||qualityLevel<2||selected!="full")){Toast.makeText(this,"请先开启最高画质、关闭虹膜试验并对准服装",Toast.LENGTH_LONG).show();return}
+  if(hairTest&&(unavailable||eyeActive||!cinematic||qualityLevel<2||selected!="full")){Toast.makeText(this,"请先开启最高画质、关闭虹膜试验并对准头发",Toast.LENGTH_LONG).show();return}
   if((skinTest||opticalTest)&&(unavailable||eyeActive||!cinematic||qualityLevel<2||selected!="full")){Toast.makeText(this,"请先开启最高画质、关闭虹膜试验并对准面部",Toast.LENGTH_LONG).show();return}
   if(shellTest&&(unavailable||eyeActive||!cinematic||qualityLevel<2||selected!="full")){Toast.makeText(this,"请先开启最高画质、关闭虹膜试验并对准机械外壳",Toast.LENGTH_LONG).show();return}
-  if(!aaTest&&!fabricTest&&!shellTest&&!skinTest&&!opticalTest&&(unavailable||(!lights&&(if(materials)eyeActive else !eyeActive||irisMaterials.isEmpty())))){
+  if(!aaTest&&!fabricTest&&!shellTest&&!skinTest&&!opticalTest&&!hairTest&&(unavailable||(!lights&&(if(materials)eyeActive else !eyeActive||irisMaterials.isEmpty())))){
    Toast.makeText(this,if(lights)"请加载高精度分区模型并打开正常光照" else if(materials)"请关闭虹膜试验，加载高精度分区模型并打开正常光照" else "请先开启虹膜试验，完成加载并打开正常光照",Toast.LENGTH_LONG).show();return
   }
   val masks=intArrayOf(0,1,2,4,8,15)
-  val labels=if(opticalTest)arrayOf("A / V7.5 SKIN","B / OPTICAL 50%","C / OPTICAL 100%") else if(skinTest)arrayOf("A / ORIGINAL PBR","B / MICRO SKIN 50%","C / MICRO SKIN 100%") else if(shellTest)arrayOf("A / ORIGINAL PBR","B / PREVIOUS COAT","C / PRECISION COAT") else if(fabricTest)arrayOf("A / ORIGINAL PBR","B / PREVIOUS FABRIC","C / MICRO WEAVE") else if(aaTest)arrayOf("A / FXAA + MSAA 4x","B / MSAA 4x only") else if(lights)arrayOf("A  /  STANDARD","B  /  SOFT","C  /  RIM","D  /  PORTRAIT","E  /  BALANCED","F  /  RIM PLUS") else if(materials)arrayOf("A  /  PBR","B  /  SKIN PBR","C  /  HAIR","D  /  FABRIC","E  /  SHELL","F  /  ALL TEST") else arrayOf("A  /  0%","B  /  50%","C  /  100%")
+  val labels=if(hairTest)arrayOf("A / V7.6 HAIR","B / HAIR OPTICAL 50%","C / HAIR OPTICAL 100%") else if(opticalTest)arrayOf("A / V7.5 SKIN","B / OPTICAL 50%","C / OPTICAL 100%") else if(skinTest)arrayOf("A / ORIGINAL PBR","B / MICRO SKIN 50%","C / MICRO SKIN 100%") else if(shellTest)arrayOf("A / ORIGINAL PBR","B / PREVIOUS COAT","C / PRECISION COAT") else if(fabricTest)arrayOf("A / ORIGINAL PBR","B / PREVIOUS FABRIC","C / MICRO WEAVE") else if(aaTest)arrayOf("A / FXAA + MSAA 4x","B / MSAA 4x only") else if(lights)arrayOf("A  /  STANDARD","B  /  SOFT","C  /  RIM","D  /  PORTRAIT","E  /  BALANCED","F  /  RIM PLUS") else if(materials)arrayOf("A  /  PBR","B  /  SKIN PBR","C  /  HAIR","D  /  FABRIC","E  /  SHELL","F  /  ALL TEST") else arrayOf("A  /  0%","B  /  50%","C  /  100%")
   val previousLight=lightProfile
   val previousMask=evidenceMask()
   val previousFabric=fabricDetail
@@ -270,14 +272,16 @@ class MainActivity : Activity() {
   val previousSkin=skinMicroDetail
   val previousSkinOn=sssInstance!=null
   val previousOptical=skinOpticalDetail
+  val previousHair=hairOpticalDetail
+  val previousHairOn=hairInstance!=null
   val vp=viewer.view.viewport
   if(vp.width<=0||vp.height<=0)return
-  val edge=if(aaTest||fabricTest||shellTest||skinTest||opticalTest)2560 else 1536
+  val edge=if(aaTest||fabricTest||shellTest||skinTest||opticalTest||hairTest)2560 else 1536
   val w=if(vp.width>=vp.height)edge else (edge.toDouble()*vp.width/vp.height).toInt().coerceAtLeast(2)
   val h=if(vp.height>=vp.width)edge else (edge.toDouble()*vp.height/vp.width).toInt().coerceAtLeast(2)
   val am=getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
   val mem=android.app.ActivityManager.MemoryInfo();am.getMemoryInfo(mem)
-  if(mem.lowMemory||mem.availMem-mem.threshold<w.toLong()*h*(if(fabricTest||shellTest||skinTest||opticalTest)144L else if(aaTest)120L else if(materials||lights)144L else 104L)+256L*1024*1024){
+  if(mem.lowMemory||mem.availMem-mem.threshold<w.toLong()*h*(if(fabricTest||shellTest||skinTest||opticalTest||hairTest)144L else if(aaTest)120L else if(materials||lights)144L else 104L)+256L*1024*1024){
    Toast.makeText(this,"可用内存不足，未执行对照导出",Toast.LENGTH_LONG).show();return
   }
   val previous=irisStrength
@@ -288,13 +292,17 @@ class MainActivity : Activity() {
   var released=false
   exportBusy=true
   js("window.studioExportLock&&studioExportLock(true)")
-  status.text=if(opticalTest)"正在采集皮肤光学三档对照" else if(skinTest)"正在采集皮肤三档近景对照" else if(shellTest)"正在采集机械漆面三档近景对照" else if(fabricTest)"正在采集织物三档近景对照" else if(aaTest)"正在采集同构图抗锯齿 A/B 原图" else if(lights)"正在采集固定构图六档布光对照" else if(materials)"正在采集固定构图六档材质对照" else "正在采集固定构图虹膜对照"
+  status.text=if(hairTest)"正在采集发束光学三档对照" else if(opticalTest)"正在采集皮肤光学三档对照" else if(skinTest)"正在采集皮肤三档近景对照" else if(shellTest)"正在采集机械漆面三档近景对照" else if(fabricTest)"正在采集织物三档近景对照" else if(aaTest)"正在采集同构图抗锯齿 A/B 原图" else if(lights)"正在采集固定构图六档布光对照" else if(materials)"正在采集固定构图六档材质对照" else "正在采集固定构图虹膜对照"
   var restoreError=""
   fun release(){
    if(released)return
    released=true
    try{
-    if(skinTest||opticalTest){
+    if(hairTest){
+     hairOpticalDetail=previousHair
+     if(previousHairOn){val msg=installHairShader();require(hairInstance!=null){msg};hairInstance?.setParameter("opticalDetail",previousHair)}else disableHairShader()
+     syncAdvancedUI()
+    } else if(skinTest||opticalTest){
      skinMicroDetail=previousSkin
      skinOpticalDetail=previousOptical
      if(previousSkinOn){val msg=installSkinShader();require(sssInstance!=null){msg};sssInstance?.setParameter("microDetail",previousSkin);sssInstance?.setParameter("opticalDetail",previousOptical)}else disableSkinShader()
@@ -328,7 +336,11 @@ class MainActivity : Activity() {
    off.setScene(viewer.scene);off.setCamera(viewer.camera);off.setRenderTarget(rt);off.setViewport(Viewport(0,0,w,h))
    configureLook(off,cinematic,true,edge,false)
    fun capture(i:Int){
-    if(opticalTest){
+    if(hairTest){
+     hairOpticalDetail=strengths[i]
+     val msg=installHairShader();require(hairInstance!=null){msg}
+     hairInstance?.setParameter("opticalDetail",hairOpticalDetail)
+    } else if(opticalTest){
      skinOpticalDetail=strengths[i]
      val msg=installSkinShader();require(sssInstance!=null){msg}
      sssInstance?.setParameter("opticalDetail",skinOpticalDetail)
@@ -361,8 +373,8 @@ class MainActivity : Activity() {
       release()
       Thread{
        try{
-        saveEvidenceSheet(buffers,w,h,labels,materials,lights,aaTest,fabricTest,shellTest,skinTest,opticalTest)
-        runOnUiThread{finish(if(opticalTest)"皮肤光学三档对照已保存到相册 / Starling" else if(skinTest)"皮肤三档近景对照已保存到相册 / Starling" else if(shellTest)"机械漆面三档近景对照已保存到相册 / Starling" else if(fabricTest)"织物三档近景对照已保存到相册 / Starling" else if(aaTest)"抗锯齿 A/B 原图已保存到相册 / Starling，请以文件方式分享" else if(lights)"六档灯光对照已保存到相册 / Starling" else if(materials)"六档材质对照已保存到相册 / Starling" else "虹膜三档对照已保存到相册 / Starling")}
+        saveEvidenceSheet(buffers,w,h,labels,materials,lights,aaTest,fabricTest,shellTest,skinTest,opticalTest,hairTest)
+        runOnUiThread{finish(if(hairTest)"发束光学三档对照已保存到相册 / Starling" else if(opticalTest)"皮肤光学三档对照已保存到相册 / Starling" else if(skinTest)"皮肤三档近景对照已保存到相册 / Starling" else if(shellTest)"机械漆面三档近景对照已保存到相册 / Starling" else if(fabricTest)"织物三档近景对照已保存到相册 / Starling" else if(aaTest)"抗锯齿 A/B 原图已保存到相册 / Starling，请以文件方式分享" else if(lights)"六档灯光对照已保存到相册 / Starling" else if(materials)"六档材质对照已保存到相册 / Starling" else "虹膜三档对照已保存到相册 / Starling")}
        }catch(e:Throwable){runOnUiThread{finish("对照输出失败："+e.message)}}
       }.start()
      }catch(e:Throwable){release();finish("对照采集失败："+e.message)}
@@ -372,7 +384,7 @@ class MainActivity : Activity() {
    capture(0)
   }catch(e:Throwable){release();finish("对照采集失败："+e.message)}
  }
- private fun saveEvidenceSheet(buffers:Array<ByteBuffer>,w:Int,h:Int,labels:Array<String>,materials:Boolean,lights:Boolean,aaTest:Boolean=false,fabricTest:Boolean=false,shellTest:Boolean=false,skinTest:Boolean=false,opticalTest:Boolean=false){
+ private fun saveEvidenceSheet(buffers:Array<ByteBuffer>,w:Int,h:Int,labels:Array<String>,materials:Boolean,lights:Boolean,aaTest:Boolean=false,fabricTest:Boolean=false,shellTest:Boolean=false,skinTest:Boolean=false,opticalTest:Boolean=false,hairTest:Boolean=false){
   val band=64
   val cols=if(materials||lights)2 else 1
   val sheet=android.graphics.Bitmap.createBitmap(w*cols,(h+band)*((buffers.size+cols-1)/cols),android.graphics.Bitmap.Config.ARGB_8888)
@@ -395,7 +407,7 @@ class MainActivity : Activity() {
     require(colored){"第 "+(i+1)+" 帧回读为空"}
    }
    val values=android.content.ContentValues().apply{
-    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME,(if(opticalTest)"Starling_SkinOptical_ABC_" else if(skinTest)"Starling_Skin_ABC_" else if(shellTest)"Starling_Shell_ABC_" else if(fabricTest)"Starling_Fabric_ABC_" else if(aaTest)"Starling_Detail_AA_AB_" else if(lights)"Starling_Lights_ABCDEF_" else if(materials)"Starling_Materials_ABCDEF_" else "Starling_Iris_ABC_")+System.currentTimeMillis()+".png")
+    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME,(if(hairTest)"Starling_HairOptical_ABC_" else if(opticalTest)"Starling_SkinOptical_ABC_" else if(skinTest)"Starling_Skin_ABC_" else if(shellTest)"Starling_Shell_ABC_" else if(fabricTest)"Starling_Fabric_ABC_" else if(aaTest)"Starling_Detail_AA_AB_" else if(lights)"Starling_Lights_ABCDEF_" else if(materials)"Starling_Materials_ABCDEF_" else "Starling_Iris_ABC_")+System.currentTimeMillis()+".png")
     put(android.provider.MediaStore.Images.Media.MIME_TYPE,"image/png")
     put(android.provider.MediaStore.Images.Media.RELATIVE_PATH,"Pictures/Starling")
     put(android.provider.MediaStore.Images.Media.IS_PENDING,1)
@@ -536,6 +548,21 @@ class MainActivity : Activity() {
   for(binding in skinBindings){val ri=rm.getInstance(binding.entity);if(ri!=0)rm.setMaterialInstanceAt(ri,binding.primitive,binding.original)}
   skinBindings.clear();sssInstance?.let{viewer.engine.destroyMaterialInstance(it)};sssInstance=null
  }
+ private fun chooseHairOpticalDetail(){
+  if(loading||exportBusy||eyePreparing||diagnostic||!regionModel||eyeActive||viewer.asset==null){Toast.makeText(this,"请加载高精度分区模型并关闭虹膜试验",Toast.LENGTH_SHORT).show();return}
+  val labels=arrayOf("原发束反射（关闭光学精修）","发束光学精修 · 50%","发束光学精修 · 100%","关闭全部发束精修并恢复原 PBR")
+  android.app.AlertDialog.Builder(this).setTitle("发束光学精修 · 实验").setItems(labels){_,i->
+   if(loading||exportBusy||eyePreparing||diagnostic||!regionModel||eyeActive)return@setItems
+   if(i==3){disableHairShader();hairOpticalDetail=0f;status.text="已恢复头发原 PBR"}
+   else{
+    val previous=hairOpticalDetail
+    hairOpticalDetail=floatArrayOf(0f,.5f,1f)[i]
+    val msg=installHairShader()
+    if(hairInstance!=null){hairInstance?.setParameter("opticalDetail",hairOpticalDetail);status.text=labels[i]}else{hairOpticalDetail=previous;status.text=msg}
+   }
+   syncAdvancedUI()
+  }.setNegativeButton("取消",null).show()
+ }
  private fun installHairShader():String{
   if(!regionModel||diagnostic||loading)return "请先加载高精度分区模型"
   if(hairInstance!=null)return "发束反射已开启"
@@ -564,6 +591,7 @@ class MainActivity : Activity() {
    sampler.setAnisotropy(8f)
    for(name in listOf("baseColorMap","normalMap","metallicRoughnessMap"))mi.setParameter(name,boundAtlas[name]?:error("缺少头发图集 "+name),sampler)
    mi.setParameter("strength",0.55f)
+   mi.setParameter("opticalDetail",hairOpticalDetail)
    for(binding in eligible){hairBindings.add(binding);rm.setMaterialInstanceAt(rm.getInstance(binding.entity),binding.primitive,mi)}
    hairInstance=mi
    return "独立各向异性着色器 · "+eligible.size+" 个图元"
@@ -822,7 +850,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V7.6").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V7.7").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -925,6 +953,8 @@ class MainActivity : Activity() {
       "skinMicroEvidence"->exportEvidence(false,skinTest=true)
       "skinOpticalDetail"->chooseSkinOpticalDetail()
       "skinOpticalEvidence"->exportEvidence(false,opticalTest=true)
+      "hairOpticalDetail"->chooseHairOpticalDetail()
+      "hairOpticalEvidence"->exportEvidence(false,hairTest=true)
       "cinematic"->{val changed=cinematic!=j.optBoolean("enabled",true);cinematic=j.optBoolean("enabled",true);prefs.edit().putBoolean("cinematic",cinematic).apply();applyStudioLook();js("window.studioLook&&studioLook("+cinematic+")");if(changed&&refineAtlas&&!diagnostic)loadMode(selected)}
       "refineAtlas"->{val next=j.optBoolean("enabled",true);if(next!=refineAtlas){refineAtlas=next;prefs.edit().putBoolean("refineAtlas",next).apply();if(!diagnostic)loadMode(selected)};js("window.studioRefine&&studioRefine("+refineAtlas+")")}
       "sss"->{
@@ -1254,13 +1284,14 @@ class MainActivity : Activity() {
    "灯光：主光 DIRECTIONAL；补光与轮廓 SPOT；方案 "+lightProfile+"（A/D 为原始主光基准）\n"+
    "虹膜试验："+(if(eyePreparing)"准备中" else if(eyeActive&&loading)"加载中" else if(eyeActive&&irisBoundSlots>0)"已绑定" else "关闭")+"；强度："+(irisStrength*100).toInt()+"%；最近结果："+irisLastResult+"\n"+
    "皮肤微表面："+(skinMicroDetail*100).toInt()+"%；光学近似："+(skinOpticalDetail*100).toInt()+"%（非真实 SSS）\n"+
+   "发束光学近似："+(hairOpticalDetail*100).toInt()+"%（UV 方向，非真实发丝散射）\n"+
    "旧皮肤 Subsurface 已移除，替换为保真 lit PBR；四套候选材质仍须逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
-  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V7.6").setMessage(report)
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V7.7").setMessage(report)
    .setNegativeButton("关闭",null).setPositiveButton("复制报告"){_,_->
     val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V7.6",report))
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V7.7",report))
     Toast.makeText(this,"诊断报告已复制",Toast.LENGTH_SHORT).show()
    }.show()
  }
@@ -2132,6 +2163,8 @@ const polish=document.createElement("button");polish.style.margin="4px";let refi
 const face=document.createElement('button');face.textContent='面部近景';face.style.margin='4px';face.onclick=()=>{yaw=0;pitch=0;zoom=2.5;x=0;y=-1.24;spin=false;$('spin').textContent='自动旋转';pose();$('panel').style.display='none'};$('check').insertAdjacentElement('afterend',face);
 const sssButton=document.createElement('button');sssButton.style.margin='4px';sssButton.disabled=true;let sss=false;window.studioSSS=on=>{sss=on;const pores=$('studioPoresRange');if(pores)pores.disabled=!on;sssButton.textContent=on?'皮肤 PBR 精修：开启':'皮肤 PBR 精修：关闭（保真测试）'};studioSSS(false);sssButton.onclick=()=>send('sss',{enabled:!sss});$('check').insertAdjacentElement('afterend',sssButton);
 const hairButton=document.createElement('button');hairButton.style.margin='4px';hairButton.disabled=true;let hairOn=false;window.studioHair=on=>{hairOn=on;hairButton.textContent=on?'发束反射：开启':'发束反射：关闭（保真测试）'};studioHair(false);hairButton.onclick=()=>send('hair',{enabled:!hairOn});$('check').insertAdjacentElement('afterend',hairButton);
+const hairOpticalButton=document.createElement('button');hairOpticalButton.textContent='发束光学精修 · 可调强度';hairOpticalButton.style.margin='4px';hairOpticalButton.onclick=()=>send('hairOpticalDetail');$('check').insertAdjacentElement('afterend',hairOpticalButton);
+const hairOpticalEvidence=document.createElement('button');hairOpticalEvidence.textContent='导出发束光学三档对照';hairOpticalEvidence.style.margin='4px';hairOpticalEvidence.onclick=()=>send('hairOpticalEvidence');$('check').insertAdjacentElement('afterend',hairOpticalEvidence);
 const clothButton=document.createElement('button');clothButton.style.margin='4px';clothButton.disabled=true;let clothOn=false;window.studioCloth=on=>{clothOn=on;clothButton.textContent=on?'织物微表面：开启':'织物微表面：关闭（保真测试）'};studioCloth(false);clothButton.onclick=()=>send('cloth',{enabled:!clothOn});$('check').insertAdjacentElement('afterend',clothButton);
 const fabricDetailButton=document.createElement('button');fabricDetailButton.textContent='近景织物精修 · 可调强度';fabricDetailButton.style.margin='4px';fabricDetailButton.onclick=()=>send('fabricDetail');$('check').insertAdjacentElement('afterend',fabricDetailButton);
 const fabricEvidenceButton=document.createElement('button');fabricEvidenceButton.textContent='导出织物三档近景对照';fabricEvidenceButton.style.margin='4px';fabricEvidenceButton.onclick=()=>send('fabricEvidence');$('check').insertAdjacentElement('afterend',fabricEvidenceButton);
@@ -2261,7 +2294,8 @@ material {
         { type : sampler2d, name : baseColorMap },
         { type : sampler2d, name : normalMap },
         { type : sampler2d, name : metallicRoughnessMap },
-        { type : float, name : strength }
+        { type : float, name : strength },
+        { type : float, name : opticalDetail }
     ],
     doubleSided : true
 }
@@ -2269,16 +2303,26 @@ fragment {
     void material(inout MaterialInputs material) {
         highp vec2 uv = getUV0();
         vec3 n = texture(materialParams_normalMap, uv).xyz * 2.0 - 1.0;
-        material.normal = normalize(vec3(n.xy * 0.48, max(n.z, 0.01)));
-        prepareMaterial(material);
         vec3 mr = texture(materialParams_metallicRoughnessMap, uv).rgb;
+        float strandMask = 1.0 - smoothstep(0.04, 0.25, mr.b);
+        float optical = clamp(materialParams.opticalDetail,0.0,1.0)*strandMask;
+        // UV-aligned artist approximation: band-limit longitudinal detail to avoid distant shimmer.
+        highp vec2 grid = uv*vec2(950.0,85.0);
+        highp vec2 fp = fwidth(grid);
+        float fade = 1.0-smoothstep(0.10,0.45,max(fp.x,fp.y));
+        float striation = sin(grid.x*6.2831853+0.18*sin(grid.y*6.2831853));
+        material.normal = normalize(vec3(n.xy*0.48+vec2(striation*0.018*optical*fade,0.0),max(n.z,0.01)));
+        prepareMaterial(material);
         material.baseColor = texture(materialParams_baseColorMap, uv);
         material.metallic = mr.b;
-        float strandMask = 1.0 - smoothstep(0.04, 0.25, mr.b);
-        material.roughness = clamp(mix(mr.g, max(mr.g, 0.40), strandMask * 0.70), 0.08, 1.0);
-        material.reflectance = mix(0.5, 0.36, strandMask);
-        material.anisotropy = clamp(materialParams.strength, 0.0, 0.65) * strandMask;
+        float previousRoughness = clamp(mix(mr.g, max(mr.g, 0.40), strandMask * 0.70), 0.08, 1.0);
+        material.roughness = clamp(previousRoughness+optical*(0.045+0.018*striation*fade)*(1.0-previousRoughness),0.08,1.0);
+        material.reflectance = mix(0.5, 0.36, strandMask)*(1.0-0.10*optical);
+        material.anisotropy = clamp(clamp(materialParams.strength,0.0,0.65)*strandMask+0.08*optical,0.0,0.65);
         material.anisotropyDirection = vec3(0.0, 1.0, 0.0);
+        // Weak broad secondary isotropic lobe; not a physical dual-anisotropic hair BSDF.
+        material.clearCoat = 0.10*optical;
+        material.clearCoatRoughness = 0.55;
     }
 }
 MAT
