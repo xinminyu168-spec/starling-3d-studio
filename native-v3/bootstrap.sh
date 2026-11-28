@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 65
-  versionName '6.3'
+  versionCode 66
+  versionName '6.4'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -252,7 +252,7 @@ class MainActivity : Activity() {
    Toast.makeText(this,if(materials)"请关闭虹膜试验，加载高精度分区模型并打开正常光照" else "请先开启虹膜试验，完成加载并打开正常光照",Toast.LENGTH_LONG).show();return
   }
   val masks=intArrayOf(0,1,2,4,8,15)
-  val labels=if(materials)arrayOf("A  /  PBR","B  /  SKIN","C  /  HAIR","D  /  FABRIC","E  /  SHELL","F  /  ALL") else arrayOf("A  /  0%","B  /  50%","C  /  100%")
+  val labels=if(materials)arrayOf("A  /  PBR","B  /  SKIN PBR","C  /  HAIR","D  /  FABRIC","E  /  SHELL","F  /  ALL TEST") else arrayOf("A  /  0%","B  /  50%","C  /  100%")
   val previousMask=evidenceMask()
   val vp=viewer.view.viewport
   if(vp.width<=0||vp.height<=0)return
@@ -408,7 +408,7 @@ class MainActivity : Activity() {
  // Opt-in shader until real-device visual verification passes.
  private fun installSkinShader():String{
   if(!regionModel||diagnostic||loading)return "请先加载高精度分区模型"
-  if(sssInstance!=null)return "皮肤散射已开启"
+  if(sssInstance!=null)return "皮肤 PBR 精修已开启"
   val asset=viewer.asset?:return "无可用模型"
   val rm=viewer.engine.renderableManager
   var created:MaterialInstance?=null
@@ -429,7 +429,7 @@ class MainActivity : Activity() {
     }
    }
    require(eligible.isNotEmpty()){"未找到皮肤候选分区"}
-   val mi=material.createInstance("Studio_skin_SSS");created=mi
+   val mi=material.createInstance("Studio_skin_PBR");created=mi
    val sampler=TextureSampler(TextureSampler.MinFilter.LINEAR_MIPMAP_LINEAR,TextureSampler.MagFilter.LINEAR,TextureSampler.WrapMode.REPEAT)
    sampler.setAnisotropy(8f)
    for(name in listOf("baseColorMap","normalMap","metallicRoughnessMap"))mi.setParameter(name,boundAtlas[name]?:error("缺少皮肤图集 "+name),sampler)
@@ -437,11 +437,11 @@ class MainActivity : Activity() {
    mi.setParameter("poreStrength",poreStrength)
    for(binding in eligible){skinBindings.add(binding);rm.setMaterialInstanceAt(rm.getInstance(binding.entity),binding.primitive,mi)}
    sssInstance=mi
-   return "独立 Subsurface 着色器 · "+eligible.size+" 个图元"
+   return "独立保真 PBR 着色器 · "+eligible.size+" 个图元"
   }catch(e:Exception){
    for(binding in skinBindings){val ri=rm.getInstance(binding.entity);if(ri!=0)rm.setMaterialInstanceAt(ri,binding.primitive,binding.original)}
    skinBindings.clear();created?.let{viewer.engine.destroyMaterialInstance(it)};sssInstance=null
-   return "皮肤散射未启用，保留原 PBR："+e.message
+   return "皮肤 PBR 精修未启用，保留原 PBR："+e.message
   }
  }
  private fun disableSkinShader(){
@@ -704,7 +704,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V6.3").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V6.4").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -934,7 +934,7 @@ class MainActivity : Activity() {
   if(loading||exportBusy||diagnostic||!regionModel||viewer.asset==null){
    Toast.makeText(this,"请先恢复正常高精度分区模型，再启用肖像精修",Toast.LENGTH_LONG).show();return
   }
-  val labels=arrayOf("A · 仅肖像布光（原 PBR）","B · 皮肤散射","C · 头发反射","D · 织物细节","E · 机械清漆","F · 四套高级材质（联合试验）")
+  val labels=arrayOf("A · 仅肖像布光（原 PBR）","B · 皮肤 PBR 精修","C · 头发反射","D · 织物细节","E · 机械清漆","F · 四套高级材质（联合试验）")
   val masks=intArrayOf(0,1,2,4,8,15)
   android.app.AlertDialog.Builder(this).setTitle("肖像精修 · 单项对照").setItems(labels){_,i->
    if(loading||exportBusy||diagnostic||!regionModel||viewer.asset==null)return@setItems
@@ -1102,13 +1102,13 @@ class MainActivity : Activity() {
    "高级材质："+n+"/4；动态分辨率：关闭\n"+
    "最近 UV 检测："+uvResult+"\n"+
    "虹膜试验："+(if(eyePreparing)"准备中" else if(eyeActive&&loading)"加载中" else if(eyeActive&&irisBoundSlots>0)"已绑定" else "关闭")+"；强度："+(irisStrength*100).toInt()+"%；最近结果："+irisLastResult+"\n"+
-   "四套高级材质已统一 glTF UV 方向（flipUV=false），需逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
+   "旧皮肤 Subsurface 已移除，替换为保真 lit PBR；四套候选材质仍须逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
-  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V6.3").setMessage(report)
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V6.4").setMessage(report)
    .setNegativeButton("关闭",null).setPositiveButton("复制报告"){_,_->
     val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V6.3",report))
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V6.4",report))
     Toast.makeText(this,"诊断报告已复制",Toast.LENGTH_SHORT).show()
    }.show()
  }
@@ -1852,10 +1852,10 @@ window.studioSkin=v=>{$('skin').value=v;$('skinV').value=Number(v).toFixed(2)};
 const look=document.createElement("button");look.textContent="影视级 / 保真";look.style.margin="4px";let cine=true;window.studioLook=on=>{cine=on;look.textContent=on?"影视级：开启（点击保真）":"保真：开启（点击影视级）"};look.onclick=()=>send("cinematic",{enabled:!cine});$("check").insertAdjacentElement("afterend",look);
 const polish=document.createElement("button");polish.style.margin="4px";let refine=true;window.studioRefine=on=>{refine=on;polish.textContent=on?"材质精修：开启":"材质精修：关闭"};studioRefine(true);polish.onclick=()=>send("refineAtlas",{enabled:!refine});$("check").insertAdjacentElement("afterend",polish);
 const face=document.createElement('button');face.textContent='面部近景';face.style.margin='4px';face.onclick=()=>{yaw=0;pitch=0;zoom=2.5;x=0;y=-1.24;spin=false;$('spin').textContent='自动旋转';pose();$('panel').style.display='none'};$('check').insertAdjacentElement('afterend',face);
-const sssButton=document.createElement('button');sssButton.style.margin='4px';sssButton.disabled=true;let sss=false;window.studioSSS=on=>{sss=on;const pores=$('studioPoresRange');if(pores)pores.disabled=!on;sssButton.textContent=on?'皮肤散射：开启':'皮肤散射：关闭（UV 修复测试）'};studioSSS(false);sssButton.onclick=()=>send('sss',{enabled:!sss});$('check').insertAdjacentElement('afterend',sssButton);
-const hairButton=document.createElement('button');hairButton.style.margin='4px';hairButton.disabled=true;let hairOn=false;window.studioHair=on=>{hairOn=on;hairButton.textContent=on?'发束反射：开启':'发束反射：关闭（UV 修复测试）'};studioHair(false);hairButton.onclick=()=>send('hair',{enabled:!hairOn});$('check').insertAdjacentElement('afterend',hairButton);
-const clothButton=document.createElement('button');clothButton.style.margin='4px';clothButton.disabled=true;let clothOn=false;window.studioCloth=on=>{clothOn=on;clothButton.textContent=on?'织物微表面：开启':'织物微表面：关闭（UV 修复测试）'};studioCloth(false);clothButton.onclick=()=>send('cloth',{enabled:!clothOn});$('check').insertAdjacentElement('afterend',clothButton);
-const shellButton=document.createElement('button');shellButton.style.margin='4px';shellButton.disabled=true;let shellOn=false;window.studioShell=on=>{shellOn=on;shellButton.textContent=on?'外壳双层烤漆：开启':'外壳双层烤漆：关闭（UV 修复测试）'};studioShell(false);shellButton.onclick=()=>send('shell',{enabled:!shellOn});$('check').insertAdjacentElement('afterend',shellButton);
+const sssButton=document.createElement('button');sssButton.style.margin='4px';sssButton.disabled=true;let sss=false;window.studioSSS=on=>{sss=on;const pores=$('studioPoresRange');if(pores)pores.disabled=!on;sssButton.textContent=on?'皮肤 PBR 精修：开启':'皮肤 PBR 精修：关闭（保真测试）'};studioSSS(false);sssButton.onclick=()=>send('sss',{enabled:!sss});$('check').insertAdjacentElement('afterend',sssButton);
+const hairButton=document.createElement('button');hairButton.style.margin='4px';hairButton.disabled=true;let hairOn=false;window.studioHair=on=>{hairOn=on;hairButton.textContent=on?'发束反射：开启':'发束反射：关闭（保真测试）'};studioHair(false);hairButton.onclick=()=>send('hair',{enabled:!hairOn});$('check').insertAdjacentElement('afterend',hairButton);
+const clothButton=document.createElement('button');clothButton.style.margin='4px';clothButton.disabled=true;let clothOn=false;window.studioCloth=on=>{clothOn=on;clothButton.textContent=on?'织物微表面：开启':'织物微表面：关闭（保真测试）'};studioCloth(false);clothButton.onclick=()=>send('cloth',{enabled:!clothOn});$('check').insertAdjacentElement('afterend',clothButton);
+const shellButton=document.createElement('button');shellButton.style.margin='4px';shellButton.disabled=true;let shellOn=false;window.studioShell=on=>{shellOn=on;shellButton.textContent=on?'外壳双层烤漆：开启':'外壳双层烤漆：关闭（保真测试）'};studioShell(false);shellButton.onclick=()=>send('shell',{enabled:!shellOn});$('check').insertAdjacentElement('afterend',shellButton);
 const poreWrap=document.createElement('label');poreWrap.style.display='block';poreWrap.style.margin='8px 4px';poreWrap.textContent='皮肤微细节 ';
 const poreValue=document.createElement('span');poreValue.textContent='0.35';poreWrap.appendChild(poreValue);
 const poreRange=document.createElement('input');poreRange.type='range';poreRange.id='studioPoresRange';poreRange.min='0';poreRange.max='1';poreRange.step='.01';poreRange.value='.35';poreRange.disabled=true;poreRange.style.width='100%';poreWrap.appendChild(poreRange);sssButton.insertAdjacentElement('afterend',poreWrap);
@@ -1900,9 +1900,9 @@ if [ "${STARLING_SKIP_IBL:-0}" != 1 ]; then
  mkdir -p app/src/main/res/raw
  cat > "$tmp/studio_skin.mat" <<'MAT'
 material {
-    name : Studio_skin_SSS,
+    name : Studio_skin_PBR,
     flipUV : false,
-    shadingModel : subsurface,
+    shadingModel : lit,
     requires : [ uv0 ],
     parameters : [
         { type : sampler2d, name : baseColorMap },
@@ -1917,37 +1917,24 @@ fragment {
     void material(inout MaterialInputs material) {
         highp vec2 uv = getUV0();
         float t = clamp(materialParams.softness, 0.0, 1.0);
-        vec3 n = texture(materialParams_normalMap, uv).xyz * 2.0 - 1.0;
         vec4 albedo = texture(materialParams_baseColorMap, uv);
         vec3 mr = texture(materialParams_metallicRoughnessMap, uv).rgb;
-        float detail = clamp(materialParams.poreStrength, 0.0, 1.0);
-        // UV-space synthetic pores: not anatomical texture data.
-        // The compact support stays inside each jittered cell, so no cell-edge seams.
-        vec2 grid = uv * 1450.0;
-        vec2 cell = floor(grid);
-        vec2 center = vec2(0.5) + 0.28 * (fract(sin(vec2(dot(cell, vec2(127.1,311.7)), dot(cell,vec2(269.5,183.3)))) * 43758.5453) - 0.5);
-        vec2 d = fract(grid) - center;
-        float radius = 0.17 + 0.07 * fract(sin(dot(cell,vec2(73.13,195.27))) * 43758.5453);
-        float radial = length(d) / radius;
-        float envelope = 1.0 - smoothstep(0.05,1.0,radial);
-        vec2 slope = (d / max(length(d), 0.001)) * (4.0 * radial * envelope);
-        vec2 footprint = fwidth(grid);
-        float fade = 1.0 - smoothstep(0.12, 0.42, max(footprint.x,footprint.y));
-        float skinMask = (1.0 - smoothstep(0.02,0.15,mr.b)) * smoothstep(0.015,0.08,albedo.r-albedo.b);
-        float pore = detail * fade * skinMask;
-        material.normal = normalize(vec3(n.xy * mix(0.55, 0.28, t) + slope * (0.04 * pore), max(n.z, 0.01)));
+        vec3 n = texture(materialParams_normalMap, uv).xyz * 2.0 - 1.0;
+        // Match the existing Skin_candidate glTF factors before a small optional refinement.
+        // Candidate atlas is mixed; these tests are conservative, not anatomical segmentation.
+        float warmth = smoothstep(0.025, 0.095, albedo.r-albedo.b);
+        float hue = smoothstep(0.005, 0.04, albedo.g-albedo.b);
+        float lightness = smoothstep(0.16, 0.32, albedo.g);
+        float mask = (1.0-smoothstep(0.015,0.065,mr.b))*warmth*hue*lightness;
+        float detail = clamp(materialParams.poreStrength,0.0,1.0);
+        float normalScale = 0.55-0.32*t;
+        material.normal = normalize(vec3(n.xy*normalScale*(1.0-0.06*mask*t*detail), n.z));
         prepareMaterial(material);
         material.baseColor = albedo;
         material.metallic = mr.b;
-        // Soften highlights only on warm non-metal skin candidates; preserve authored atlas.
-        float roughBase = clamp(mr.g * mix(0.92, 1.0, t), 0.08, 1.0);
-        material.roughness = clamp(mix(roughBase, max(roughBase, 0.60), skinMask * t) + 0.035 * envelope * pore, 0.08, 1.0);
-        material.reflectance = mix(0.45, 0.27, skinMask * t) - 0.015 * envelope * pore;
-        // A colour-derived scattering proxy, not measured physical skin thickness.
-        float warm = smoothstep(0.015, 0.14, albedo.r-albedo.b) * skinMask;
-        material.thickness = clamp(mix(0.90, 0.58, t) - 0.10 * warm * t, 0.45, 0.95);
-        material.subsurfaceColor = albedo.rgb * vec3(0.34, 0.19, 0.13) * t * skinMask;
-        material.subsurfacePower = 5.0;
+        float baseline = mr.g*(1.0-0.08*(1.0-t));
+        material.roughness = clamp(baseline + 0.025*mask*t*detail*(1.0-baseline),0.045,1.0);
+        material.reflectance = 0.5;
     }
 }
 MAT
