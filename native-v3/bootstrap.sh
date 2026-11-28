@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 81
-  versionName '7.9'
+  versionCode 82
+  versionName '8.0'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -767,6 +767,7 @@ class MainActivity : Activity() {
   4 to (110485464L to "e287533d912d8f46bd0af4df795f71e73d19ddea3ea632cf644a582859f4e5e2")
  )
  private fun candidateFile(id:Int)=File(filesDir,"studio-candidates/candidate-"+id+".glb")
+ private fun candidateSpec(id:Int):Pair<Long,String>?=candidateSpecs[id]?:runCatching{SignedAssets.read(this,id).let{it.size to it.hash}}.getOrNull()
  private var sourceBaseline=false
  private var lensZoom=true
  private var lastLensW=-1
@@ -1030,6 +1031,7 @@ class MainActivity : Activity() {
       "sourceBaseline"->toggleSourceBaseline()
       "candidateImport"->{if(!loading&&!exportBusy)startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"),83)}
       "candidateSelect"->{if(!loading&&!exportBusy)chooseCandidate()}
+      "signedAssetImport"->{if(!loading&&!exportBusy)startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"),84)}
       "lensZoom"->{if(!loading){lensZoom=!lensZoom;applyTransform();js("window.studioLensZoom&&studioLensZoom("+lensZoom+")");status.text=if(lensZoom)"镜头缩放：固定模型比例与灯光位置" else "旧版缩放：仅供对照"}}
       "uvProbe"->toggleUvProbe()
       "uvAuto"->runUvComparison()
@@ -1116,8 +1118,9 @@ class MainActivity : Activity() {
   js("window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")
  }
  private fun chooseCandidate(){
-  val ids=listOf(0,3,4)
-  val labels=arrayOf("返回原始 GLB（相同灯光与镜头）","Candidate 03 · 原镜片纹理"+(if(candidateFile(3).exists())"（已导入）" else "（未导入）"),"Candidate 04 · 镜片高光衰减"+(if(candidateFile(4).exists())"（已导入）" else "（未导入）"))
+  val extra=SignedAssets.ids(this)
+  val ids=listOf(0,3,4)+extra
+  val labels=arrayOf("返回原始 GLB（相同灯光与镜头）","Candidate 03 · 原镜片纹理"+(if(candidateFile(3).exists())"（已导入）" else "（未导入）"),"Candidate 04 · 镜片高光衰减"+(if(candidateFile(4).exists())"（已导入）" else "（未导入）"))+extra.map{"已签名资产 "+it}.toTypedArray()
   android.app.AlertDialog.Builder(this).setTitle("候选资产 A/B 对照").setItems(labels){_,i->
    if(loading||exportBusy||candidateImporting)return@setItems
    val id=ids[i]
@@ -1132,7 +1135,7 @@ class MainActivity : Activity() {
   return md.digest().joinToString(""){"%02x".format(it)}
  }
  private fun openCandidate(id:Int){
-  val f=candidateFile(id);val spec=candidateSpecs[id]?:return
+  val f=candidateFile(id);val spec=candidateSpec(id)?:return
   candidateImporting=true;status.text="正在校验候选模型 "+id
   Thread{
    val valid=runCatching{f.length()==spec.first&&shaCandidate(f)==spec.second}.getOrDefault(false)
@@ -1892,6 +1895,18 @@ class MainActivity : Activity() {
  }
  override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
   super.onActivityResult(requestCode,resultCode,data)
+  if(requestCode==84){
+   val uri=data?.data
+   if(resultCode!=RESULT_OK||uri==null||candidateImporting||loading||exportBusy)return
+   candidateImporting=true;status.text="正在验证独立签名资产包"
+   Thread{
+    try{
+     val id=contentResolver.openInputStream(uri)!!.use{SignedAssets.install(this,it)}
+     runOnUiThread{candidateImporting=false;if(!isDestroyed&&!isFinishing)openCandidate(id)}
+    }catch(e:Exception){runOnUiThread{candidateImporting=false;if(!isDestroyed)status.text="资产包未启用："+e.message}}
+   }.start()
+   return
+  }
   if(requestCode==83){
    val uri=data?.data
    if(resultCode!=RESULT_OK||uri==null||candidateImporting||loading||exportBusy)return
@@ -2156,6 +2171,100 @@ object IrisPatch {
  }
 }
 EOF
+cat > app/src/main/java/com/starling/filament/SignedAssets.kt <<'EOF'
+package com.starling.filament
+import android.content.Context
+import android.content.pm.PackageManager
+import android.util.Base64
+import java.io.File
+import java.io.InputStream
+import java.security.MessageDigest
+import java.security.Signature
+import java.security.cert.CertificateFactory
+import java.util.zip.ZipInputStream
+import org.json.JSONObject
+
+// Opt-in offline asset updates. No network location or executable content.
+object SignedAssets {
+ private const val MAX=150_000_000L
+ private const val CERT="065d80ddf51e5a7cbc881900351ee355cdd8aa2447fee0a959d0391ecc02c7ba"
+ private const val SOURCE="97c80d3a7f5b8e6412687ab30574fa4efdb5cd4db0a3115356de426ae411e379"
+ data class Spec(val id:Int,val size:Long,val hash:String)
+ private fun dir(c:Context)=File(c.filesDir,"studio-candidates")
+ private fun model(c:Context,id:Int)=File(dir(c),"candidate-"+id+".glb")
+ private fun meta(c:Context,id:Int)=File(dir(c),"candidate-"+id+".signed.json")
+ private fun hex(b:ByteArray)=b.joinToString(""){"%02x".format(it)}
+ private fun digest(f:File):String{
+  val md=MessageDigest.getInstance("SHA-256")
+  f.inputStream().use{input->val b=ByteArray(65536);while(true){val n=input.read(b);if(n<0)break;md.update(b,0,n)}}
+  return hex(md.digest())
+ }
+ private fun small(input:InputStream,limit:Int):ByteArray{
+  val out=java.io.ByteArrayOutputStream();val b=ByteArray(4096)
+  while(true){val n=input.read(b);if(n<0)break;require(out.size()+n<=limit){"清单过大"};out.write(b,0,n)}
+  return out.toByteArray()
+ }
+ @Suppress("DEPRECATION")
+ private fun verified(c:Context,raw:ByteArray):Spec{
+  require(raw.size<=32768)
+  val env=JSONObject(String(raw,Charsets.UTF_8))
+  val payload=Base64.decode(env.getString("payload"),Base64.NO_WRAP)
+  val sig=Base64.decode(env.getString("signature"),Base64.NO_WRAP)
+  require(payload.size in 1..8192&&sig.size in 128..1024)
+  val pkg=c.packageManager.getPackageInfo(c.packageName,if(android.os.Build.VERSION.SDK_INT>=28)PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES)
+  val signer=(if(android.os.Build.VERSION.SDK_INT>=28)pkg.signingInfo?.apkContentsSigners else pkg.signatures)?.singleOrNull()?:error("签名证书不可用")
+  val der=signer.toByteArray()
+  require(hex(MessageDigest.getInstance("SHA-256").digest(der))==CERT){"非正式版签名"}
+  val pub=CertificateFactory.getInstance("X.509").generateCertificate(der.inputStream()).publicKey
+  require(Signature.getInstance("SHA256withRSA").apply{initVerify(pub);update(payload)}.verify(sig)){"资产签名无效"}
+  val j=JSONObject(String(payload,Charsets.UTF_8))
+  require(j.getInt("schema")==1&&j.getString("package")=="com.xs.character.viewer"&&j.getString("sourceSha256")==SOURCE&&j.getString("profile")=="semantic8"){"资产协议不匹配"}
+  val v=if(android.os.Build.VERSION.SDK_INT>=28)pkg.longVersionCode else pkg.versionCode.toLong()
+  require(j.getInt("minAppVersion") in 82..v.toInt()){"需要更新 APP"}
+  val id=j.getInt("id");val size=j.getLong("size");val hash=j.getString("sha256")
+  require(id in 5..999999&&size in 20..MAX&&hash.matches(Regex("[0-9a-f]{64}"))){"资产参数不合法"}
+  return Spec(id,size,hash)
+ }
+ fun read(c:Context,id:Int):Spec{
+  require(id in 5..999999)
+  return verified(c,meta(c,id).inputStream().use{small(it,32768)}).also{require(it.id==id)}
+ }
+ fun ids(c:Context):List<Int>=(dir(c).listFiles()?:emptyArray<File>()).mapNotNull{f->
+  Regex("candidate-([0-9]+)\\.signed\\.json").matchEntire(f.name)?.groupValues?.get(1)?.toIntOrNull()
+ }.filter{id->runCatching{val s=read(c,id);model(c,id).length()==s.size}.getOrDefault(false)}.sorted()
+ @Synchronized fun install(c:Context,input:InputStream):Int{
+  val d=dir(c).apply{mkdirs()}
+  val staged=File.createTempFile("asset-",".part",d)
+  val descriptor=File.createTempFile("meta-",".part",d)
+  try{
+   ZipInputStream(java.io.BufferedInputStream(input)).use{z->
+    val first=z.nextEntry?:error("空资产包")
+    require(first.name=="manifest.json"&&!first.isDirectory){"首项必须是签名清单"}
+    val raw=small(z,32768)
+    val spec=verified(c,raw)
+    z.closeEntry()
+    require(d.usableSpace>spec.size+10_000_000L){"空间不足"}
+    val dst=model(c,spec.id);val mdst=meta(c,spec.id)
+    require(!mdst.exists()||read(c,spec.id)==spec){"资产编号已占用，请使用新编号"}
+    val second=z.nextEntry?:error("缺少模型")
+    require(second.name=="model.glb"&&!second.isDirectory){"资产包条目错误"}
+    val md=MessageDigest.getInstance("SHA-256");var total=0L
+    staged.outputStream().use{out->val b=ByteArray(65536);while(true){val n=z.read(b);if(n<0)break;total+=n;require(total<=spec.size){"模型长度超限"};md.update(b,0,n);out.write(b,0,n)};out.fd.sync()}
+    require(total==spec.size&&hex(md.digest())==spec.hash){"模型哈希不匹配"}
+    z.closeEntry();require(z.nextEntry==null){"不允许额外条目"}
+    java.io.RandomAccessFile(staged,"r").use{f->require(Integer.reverseBytes(f.readInt())==0x46546c67&&Integer.reverseBytes(f.readInt())==2&&Integer.reverseBytes(f.readInt()).toLong()==total){"无效 GLB"}}
+    if(dst.exists()){require(dst.length()==spec.size&&digest(dst)==spec.hash){"模型编号冲突"}}
+    else android.system.Os.rename(staged.absolutePath,dst.absolutePath)
+    if(!mdst.exists()){
+     descriptor.outputStream().use{it.write(raw);it.fd.sync()}
+     android.system.Os.rename(descriptor.absolutePath,mdst.absolutePath)
+    }
+    return spec.id
+   }
+  }finally{staged.delete();descriptor.delete()}
+ }
+}
+EOF
 cat > app/src/main/java/com/starling/filament/StudioAssets.kt <<'EOF'
 package com.starling.filament
 import android.content.Context
@@ -2305,6 +2414,7 @@ const portraitButton=document.createElement('button');portraitButton.textContent
 const lightEvidenceButton=document.createElement('button');lightEvidenceButton.textContent='导出六档布光对照';lightEvidenceButton.style.margin='4px';lightEvidenceButton.onclick=()=>send('lightEvidence');$('check').insertAdjacentElement('afterend',lightEvidenceButton);
 const lightingButton=document.createElement('button');lightingButton.textContent='灯光校准 · 均衡影视';lightingButton.style.margin='4px';lightingButton.onclick=()=>send('lightProfile');$('check').insertAdjacentElement('afterend',lightingButton);
 window.studioLightProfile=i=>{lightingButton.textContent='灯光校准 · '+['标准主光','柔和棚拍','轮廓造型','角色肖像','均衡影视','轮廓增强'][i]};
+const signedAssetButton=document.createElement('button');signedAssetButton.textContent='导入独立签名资产更新包';signedAssetButton.style.margin='4px';signedAssetButton.onclick=()=>send('signedAssetImport');$('check').insertAdjacentElement('afterend',signedAssetButton);
 const candidateImport=document.createElement('button');candidateImport.textContent='导入已验证候选 GLB';candidateImport.style.margin='4px';candidateImport.onclick=()=>send('candidateImport');$('check').insertAdjacentElement('afterend',candidateImport);
 const candidateSelect=document.createElement('button');candidateSelect.style.margin='4px';window.studioCandidate=id=>{candidateSelect.textContent=id?'候选 '+id+' · 切换 A/B':'候选资产 A/B 对照'};studioCandidate(0);candidateSelect.onclick=()=>send('candidateSelect');$('check').insertAdjacentElement('afterend',candidateSelect);
 const sourceButton=document.createElement('button');sourceButton.style.margin='4px';window.studioSourceBaseline=on=>{sourceButton.textContent=on?'源 GLB 原始材质：开启（点击返回精修）':'源 GLB 原始材质对照'};studioSourceBaseline(false);sourceButton.onclick=()=>send('sourceBaseline');$('check').insertAdjacentElement('afterend',sourceButton);
