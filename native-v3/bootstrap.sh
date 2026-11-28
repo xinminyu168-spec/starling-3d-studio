@@ -977,6 +977,7 @@ class MainActivity : Activity() {
         .setMessage("引擎：Filament 1.56.0\n"+modelAudit+"\n加载进度："+lastLoadPercent.coerceAtLeast(0)+"%\n仅色彩图诊断使用当前规格的临时原始模型，绕过光照、金属度与法线，不修改原文件。进入后点击 UV 采样对照可切换 glTF 原材质与自定义采样器。")
         .setNegativeButton("关闭",null).setPositiveButton(if(diagnostic)"恢复原模型" else "仅色彩图诊断"){_,_->
          if(loading||exportBusy)return@setPositiveButton
+         if(selected=="imported"||candidateMode!=0){status.text="本地及候选模型已使用原生 glTF；此诊断仅用于内置模型";return@setPositiveButton}
          sourceBaseline=false;js("window.studioSourceBaseline&&studioSourceBaseline(false)");diagnostic=!diagnostic;loadMode(selected)
         }.show()
       }
@@ -1048,7 +1049,7 @@ class MainActivity : Activity() {
       "restore"->{js("studioRestore("+JSONObject.quote(prefs.getString("params","")?:"")+")")}
       "compare"->{val p=surface.layoutParams as FrameLayout.LayoutParams;p.leftMargin=if(j.optBoolean("show"))(web.width*.43f).toInt() else 0;surface.layoutParams=p}
       "check"->{pausedResources=false;prefs.edit().putBoolean("paused",false).apply();appUpdates.check(true);sync(manual=true)}
-      "rollback"->{android.app.AlertDialog.Builder(this@MainActivity).setTitle("恢复内置资源？").setMessage("仅恢复内置模型和光照，保留原始素材。").setNegativeButton("取消",null).setPositiveButton("恢复"){_,_->for(m in listOf("full","mobile")){File(filesDir,"model-"+m+".glb").delete()};getSharedPreferences("native_resource_updates",0).edit().clear().apply();pausedResources=true;prefs.edit().putBoolean("paused",true).apply();loadMode(selected);js("studioDefaults()");status.text="已恢复内置资源，自动资源检测已暂停"}.show()}
+      "rollback"->{android.app.AlertDialog.Builder(this@MainActivity).setTitle("恢复内置资源？").setMessage("仅恢复内置模型和光照，保留原始素材。").setNegativeButton("取消",null).setPositiveButton("恢复"){_,_->for(m in listOf("full","mobile")){File(filesDir,"model-"+m+".glb").delete()};getSharedPreferences("native_resource_updates",0).edit().clear().apply();pausedResources=true;prefs.edit().putBoolean("paused",true).apply();returnToBuiltIn();js("studioDefaults()");status.text="已恢复内置资源，自动资源检测已暂停"}.show()}
      }
     }catch(e:Exception){status.text="操作失败："+e.message}
    }
@@ -1159,9 +1160,11 @@ class MainActivity : Activity() {
   }.setNegativeButton("关闭",null).show()
  }
  private fun beginModelExport(){
+  if(modelPickerOpen||candidateImporting||loading||exportBusy)return
   val f=loadedModelFile
   if(f==null||!f.isFile||viewer.asset==null){Toast.makeText(this,"请先完成模型加载",Toast.LENGTH_SHORT).show();return}
   android.app.AlertDialog.Builder(this).setTitle("导出当前 GLB").setMessage("保存当前加载的完整模型文件，包括几何、原始材质、内嵌贴图。工作台实时灯光、镜头和自定义着色器不写入模型。").setNegativeButton("取消",null).setPositiveButton("选择保存位置"){_,_->
+   if(loading||exportBusy||candidateImporting||loadedModelFile!=f)return@setPositiveButton
    pendingModelExport=f;modelPickerOpen=true
    val name=if(selected=="imported")prefs.getString("model-name-"+f.name,"model.glb")?: "model.glb" else f.name
    try{startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("model/gltf-binary").putExtra(Intent.EXTRA_TITLE,name),85)}
@@ -1434,6 +1437,11 @@ class MainActivity : Activity() {
  }
  private fun maximumPreset(){
   if(exportBusy||loading){Toast.makeText(this,"请先完成当前操作",Toast.LENGTH_SHORT).show();return}
+  if(selected=="imported"||candidateMode!=0){
+   cinematic=true;qualityLevel=2.0;flat=false;detailAA=false;exp=1.04f;keyPower=1f;ambientPower=1f;lightProfile=4;syncDetailAA();applyStudioLook()
+   js("window.studioMaximum&&studioMaximum();studioModel("+JSONObject.quote(selected)+")")
+   status.text="当前模型最高画质 · 保留原生 GLB 材质";return
+  }
   val reload=candidateMode!=0||sourceBaseline||!regionModel||selected!="full"||!cinematic||!refineAtlas||diagnostic
   sourceBaseline=false;js("window.studioSourceBaseline&&studioSourceBaseline(false)")
   cinematic=true;refineAtlas=true;diagnostic=false;selected="full";qualityLevel=2.0;flat=false
@@ -1856,7 +1864,7 @@ class MainActivity : Activity() {
    val nativeLocal=selected=="imported"
    val atlas=mutableListOf<Atlas>()
    if(nativeLocal){
-    modelAudit="本地文件："+f.name+"\\n材质："+(doc.optJSONArray("materials")?.length()?:0)+" · 图像："+(doc.optJSONArray("images")?.length()?:0)+" · 原生 glTF"
+    modelAudit="本地文件："+f.name+"\n材质："+(doc.optJSONArray("materials")?.length()?:0)+" · 图像："+(doc.optJSONArray("images")?.length()?:0)+" · 原生 glTF"
    }else{
    val materials=doc.optJSONArray("materials")?:error("缺少材质")
    val images=doc.optJSONArray("images")?:error("缺少纹理")
