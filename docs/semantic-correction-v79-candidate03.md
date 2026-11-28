@@ -1,0 +1,8 @@
+# V7.9 candidate 03: optical-region segmentation
+Local candidate 02 SHA-256 2ce07371cf573aa5abd908c01095b0a0f3df86d063f2aae3311a12d3d468d584; candidate 03 SHA-256 397f12af674a7e48c0b568aa1975fae6adc24e9a92f420d2a7083b9ce05295fb.
+
+Three orthographic views (0, 25, 335 degrees), 1000x1000, 4000 pixels per native coordinate unit, center Y=.805. Depth-tested triangle IDs, manually traced interior polygons, >=98% of each triangle's visible pixels within mask in a selecting view. Lens eligible old IDs 0/1/2, eye surface old ID 1 only. Union across views, no hidden propagation, zero conflicting triangles. 2030 lens triangles (2009 General, 21 Hair), 51 eye surface triangles (Skin). Counts by IDs 0..7: 1026995, 91708, 122963, 311755, 405150, 0, 2030, 51.
+
+Added Goggle_lens_candidate and Eye_surface_candidate with identical PBR values and shared maps. Total 1960652 triangles, exact oriented triangle multiset verified. All binary bytes outside index partitions unchanged; existing positions, normals, UV and textures unchanged. Three-view CPU material-ID preview visually inspected. Eye masks are incomplete, not anatomical eyeballs, and lens boundary deliberately conservative. No rendered optical effect or device acceptance yet.
+
+Current Android loader requires exact six definitions and will reject this eight-definition candidate. Next: explicit opt-in candidate asset validation and loader extension, then controlled same-camera lens PBR comparison. Do not change trusted production asset hashes or publish private source assets. V7.8 signed publication remains unresolved; existing update channel unchanged in this step.
