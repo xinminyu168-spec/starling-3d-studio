@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 77
-  versionName '7.5'
+  versionCode 78
+  versionName '7.6'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -124,6 +124,7 @@ class MainActivity : Activity() {
  private val boundAtlas=mutableMapOf<String,Texture>()
  private var skinShader:Material?=null
  private var skinMicroDetail=0f
+ private var skinOpticalDetail=0f
  private var hairShader:Material?=null
  private var shellShader:Material?=null
  private var shellInstance:MaterialInstance?=null
@@ -249,17 +250,17 @@ class MainActivity : Activity() {
  }
  private fun exportIrisEvidence()=exportEvidence(false)
  private fun exportMaterialEvidence()=exportEvidence(true)
- private fun exportEvidence(materials:Boolean,lights:Boolean=false,aaTest:Boolean=false,fabricTest:Boolean=false,shellTest:Boolean=false,skinTest:Boolean=false){
+ private fun exportEvidence(materials:Boolean,lights:Boolean=false,aaTest:Boolean=false,fabricTest:Boolean=false,shellTest:Boolean=false,skinTest:Boolean=false,opticalTest:Boolean=false){
   val unavailable=loading||eyePreparing||exportBusy||!active||flat||diagnostic||!regionModel||viewer.asset==null
   if(aaTest&&(unavailable||!cinematic||qualityLevel<2||selected!="full")){Toast.makeText(this,"请先开启最高画质并加载高精模型，再将目标部位放大到合适位置",Toast.LENGTH_LONG).show();return}
   if(fabricTest&&(unavailable||eyeActive||!cinematic||qualityLevel<2||selected!="full")){Toast.makeText(this,"请先开启最高画质、关闭虹膜试验并对准服装",Toast.LENGTH_LONG).show();return}
-  if(skinTest&&(unavailable||eyeActive||!cinematic||qualityLevel<2||selected!="full")){Toast.makeText(this,"请先开启最高画质、关闭虹膜试验并对准面部",Toast.LENGTH_LONG).show();return}
+  if((skinTest||opticalTest)&&(unavailable||eyeActive||!cinematic||qualityLevel<2||selected!="full")){Toast.makeText(this,"请先开启最高画质、关闭虹膜试验并对准面部",Toast.LENGTH_LONG).show();return}
   if(shellTest&&(unavailable||eyeActive||!cinematic||qualityLevel<2||selected!="full")){Toast.makeText(this,"请先开启最高画质、关闭虹膜试验并对准机械外壳",Toast.LENGTH_LONG).show();return}
-  if(!aaTest&&!fabricTest&&!shellTest&&!skinTest&&(unavailable||(!lights&&(if(materials)eyeActive else !eyeActive||irisMaterials.isEmpty())))){
+  if(!aaTest&&!fabricTest&&!shellTest&&!skinTest&&!opticalTest&&(unavailable||(!lights&&(if(materials)eyeActive else !eyeActive||irisMaterials.isEmpty())))){
    Toast.makeText(this,if(lights)"请加载高精度分区模型并打开正常光照" else if(materials)"请关闭虹膜试验，加载高精度分区模型并打开正常光照" else "请先开启虹膜试验，完成加载并打开正常光照",Toast.LENGTH_LONG).show();return
   }
   val masks=intArrayOf(0,1,2,4,8,15)
-  val labels=if(skinTest)arrayOf("A / ORIGINAL PBR","B / MICRO SKIN 50%","C / MICRO SKIN 100%") else if(shellTest)arrayOf("A / ORIGINAL PBR","B / PREVIOUS COAT","C / PRECISION COAT") else if(fabricTest)arrayOf("A / ORIGINAL PBR","B / PREVIOUS FABRIC","C / MICRO WEAVE") else if(aaTest)arrayOf("A / FXAA + MSAA 4x","B / MSAA 4x only") else if(lights)arrayOf("A  /  STANDARD","B  /  SOFT","C  /  RIM","D  /  PORTRAIT","E  /  BALANCED","F  /  RIM PLUS") else if(materials)arrayOf("A  /  PBR","B  /  SKIN PBR","C  /  HAIR","D  /  FABRIC","E  /  SHELL","F  /  ALL TEST") else arrayOf("A  /  0%","B  /  50%","C  /  100%")
+  val labels=if(opticalTest)arrayOf("A / V7.5 SKIN","B / OPTICAL 50%","C / OPTICAL 100%") else if(skinTest)arrayOf("A / ORIGINAL PBR","B / MICRO SKIN 50%","C / MICRO SKIN 100%") else if(shellTest)arrayOf("A / ORIGINAL PBR","B / PREVIOUS COAT","C / PRECISION COAT") else if(fabricTest)arrayOf("A / ORIGINAL PBR","B / PREVIOUS FABRIC","C / MICRO WEAVE") else if(aaTest)arrayOf("A / FXAA + MSAA 4x","B / MSAA 4x only") else if(lights)arrayOf("A  /  STANDARD","B  /  SOFT","C  /  RIM","D  /  PORTRAIT","E  /  BALANCED","F  /  RIM PLUS") else if(materials)arrayOf("A  /  PBR","B  /  SKIN PBR","C  /  HAIR","D  /  FABRIC","E  /  SHELL","F  /  ALL TEST") else arrayOf("A  /  0%","B  /  50%","C  /  100%")
   val previousLight=lightProfile
   val previousMask=evidenceMask()
   val previousFabric=fabricDetail
@@ -268,14 +269,15 @@ class MainActivity : Activity() {
   val previousShellOn=shellInstance!=null
   val previousSkin=skinMicroDetail
   val previousSkinOn=sssInstance!=null
+  val previousOptical=skinOpticalDetail
   val vp=viewer.view.viewport
   if(vp.width<=0||vp.height<=0)return
-  val edge=if(aaTest||fabricTest||shellTest||skinTest)2560 else 1536
+  val edge=if(aaTest||fabricTest||shellTest||skinTest||opticalTest)2560 else 1536
   val w=if(vp.width>=vp.height)edge else (edge.toDouble()*vp.width/vp.height).toInt().coerceAtLeast(2)
   val h=if(vp.height>=vp.width)edge else (edge.toDouble()*vp.height/vp.width).toInt().coerceAtLeast(2)
   val am=getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
   val mem=android.app.ActivityManager.MemoryInfo();am.getMemoryInfo(mem)
-  if(mem.lowMemory||mem.availMem-mem.threshold<w.toLong()*h*(if(fabricTest||shellTest||skinTest)144L else if(aaTest)120L else if(materials||lights)144L else 104L)+256L*1024*1024){
+  if(mem.lowMemory||mem.availMem-mem.threshold<w.toLong()*h*(if(fabricTest||shellTest||skinTest||opticalTest)144L else if(aaTest)120L else if(materials||lights)144L else 104L)+256L*1024*1024){
    Toast.makeText(this,"可用内存不足，未执行对照导出",Toast.LENGTH_LONG).show();return
   }
   val previous=irisStrength
@@ -286,15 +288,16 @@ class MainActivity : Activity() {
   var released=false
   exportBusy=true
   js("window.studioExportLock&&studioExportLock(true)")
-  status.text=if(skinTest)"正在采集皮肤三档近景对照" else if(shellTest)"正在采集机械漆面三档近景对照" else if(fabricTest)"正在采集织物三档近景对照" else if(aaTest)"正在采集同构图抗锯齿 A/B 原图" else if(lights)"正在采集固定构图六档布光对照" else if(materials)"正在采集固定构图六档材质对照" else "正在采集固定构图虹膜对照"
+  status.text=if(opticalTest)"正在采集皮肤光学三档对照" else if(skinTest)"正在采集皮肤三档近景对照" else if(shellTest)"正在采集机械漆面三档近景对照" else if(fabricTest)"正在采集织物三档近景对照" else if(aaTest)"正在采集同构图抗锯齿 A/B 原图" else if(lights)"正在采集固定构图六档布光对照" else if(materials)"正在采集固定构图六档材质对照" else "正在采集固定构图虹膜对照"
   var restoreError=""
   fun release(){
    if(released)return
    released=true
    try{
-    if(skinTest){
+    if(skinTest||opticalTest){
      skinMicroDetail=previousSkin
-     if(previousSkinOn){val msg=installSkinShader();require(sssInstance!=null){msg};sssInstance?.setParameter("microDetail",previousSkin)}else disableSkinShader()
+     skinOpticalDetail=previousOptical
+     if(previousSkinOn){val msg=installSkinShader();require(sssInstance!=null){msg};sssInstance?.setParameter("microDetail",previousSkin);sssInstance?.setParameter("opticalDetail",previousOptical)}else disableSkinShader()
      syncAdvancedUI()
     } else if(shellTest){
      shellDetail=previousShell
@@ -325,7 +328,13 @@ class MainActivity : Activity() {
    off.setScene(viewer.scene);off.setCamera(viewer.camera);off.setRenderTarget(rt);off.setViewport(Viewport(0,0,w,h))
    configureLook(off,cinematic,true,edge,false)
    fun capture(i:Int){
-    if(skinTest){
+    if(opticalTest){
+     skinOpticalDetail=strengths[i]
+     val msg=installSkinShader();require(sssInstance!=null){msg}
+     sssInstance?.setParameter("opticalDetail",skinOpticalDetail)
+    } else if(skinTest){
+     skinOpticalDetail=0f
+     sssInstance?.setParameter("opticalDetail",0f)
      if(i==0)disableSkinShader() else {
       skinMicroDetail=if(i==1).5f else 1f
       val msg=installSkinShader();require(sssInstance!=null){msg}
@@ -352,8 +361,8 @@ class MainActivity : Activity() {
       release()
       Thread{
        try{
-        saveEvidenceSheet(buffers,w,h,labels,materials,lights,aaTest,fabricTest,shellTest,skinTest)
-        runOnUiThread{finish(if(skinTest)"皮肤三档近景对照已保存到相册 / Starling" else if(shellTest)"机械漆面三档近景对照已保存到相册 / Starling" else if(fabricTest)"织物三档近景对照已保存到相册 / Starling" else if(aaTest)"抗锯齿 A/B 原图已保存到相册 / Starling，请以文件方式分享" else if(lights)"六档灯光对照已保存到相册 / Starling" else if(materials)"六档材质对照已保存到相册 / Starling" else "虹膜三档对照已保存到相册 / Starling")}
+        saveEvidenceSheet(buffers,w,h,labels,materials,lights,aaTest,fabricTest,shellTest,skinTest,opticalTest)
+        runOnUiThread{finish(if(opticalTest)"皮肤光学三档对照已保存到相册 / Starling" else if(skinTest)"皮肤三档近景对照已保存到相册 / Starling" else if(shellTest)"机械漆面三档近景对照已保存到相册 / Starling" else if(fabricTest)"织物三档近景对照已保存到相册 / Starling" else if(aaTest)"抗锯齿 A/B 原图已保存到相册 / Starling，请以文件方式分享" else if(lights)"六档灯光对照已保存到相册 / Starling" else if(materials)"六档材质对照已保存到相册 / Starling" else "虹膜三档对照已保存到相册 / Starling")}
        }catch(e:Throwable){runOnUiThread{finish("对照输出失败："+e.message)}}
       }.start()
      }catch(e:Throwable){release();finish("对照采集失败："+e.message)}
@@ -363,7 +372,7 @@ class MainActivity : Activity() {
    capture(0)
   }catch(e:Throwable){release();finish("对照采集失败："+e.message)}
  }
- private fun saveEvidenceSheet(buffers:Array<ByteBuffer>,w:Int,h:Int,labels:Array<String>,materials:Boolean,lights:Boolean,aaTest:Boolean=false,fabricTest:Boolean=false,shellTest:Boolean=false,skinTest:Boolean=false){
+ private fun saveEvidenceSheet(buffers:Array<ByteBuffer>,w:Int,h:Int,labels:Array<String>,materials:Boolean,lights:Boolean,aaTest:Boolean=false,fabricTest:Boolean=false,shellTest:Boolean=false,skinTest:Boolean=false,opticalTest:Boolean=false){
   val band=64
   val cols=if(materials||lights)2 else 1
   val sheet=android.graphics.Bitmap.createBitmap(w*cols,(h+band)*((buffers.size+cols-1)/cols),android.graphics.Bitmap.Config.ARGB_8888)
@@ -386,7 +395,7 @@ class MainActivity : Activity() {
     require(colored){"第 "+(i+1)+" 帧回读为空"}
    }
    val values=android.content.ContentValues().apply{
-    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME,(if(skinTest)"Starling_Skin_ABC_" else if(shellTest)"Starling_Shell_ABC_" else if(fabricTest)"Starling_Fabric_ABC_" else if(aaTest)"Starling_Detail_AA_AB_" else if(lights)"Starling_Lights_ABCDEF_" else if(materials)"Starling_Materials_ABCDEF_" else "Starling_Iris_ABC_")+System.currentTimeMillis()+".png")
+    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME,(if(opticalTest)"Starling_SkinOptical_ABC_" else if(skinTest)"Starling_Skin_ABC_" else if(shellTest)"Starling_Shell_ABC_" else if(fabricTest)"Starling_Fabric_ABC_" else if(aaTest)"Starling_Detail_AA_AB_" else if(lights)"Starling_Lights_ABCDEF_" else if(materials)"Starling_Materials_ABCDEF_" else "Starling_Iris_ABC_")+System.currentTimeMillis()+".png")
     put(android.provider.MediaStore.Images.Media.MIME_TYPE,"image/png")
     put(android.provider.MediaStore.Images.Media.RELATIVE_PATH,"Pictures/Starling")
     put(android.provider.MediaStore.Images.Media.IS_PENDING,1)
@@ -452,12 +461,28 @@ class MainActivity : Activity() {
   }
  }
  // Opt-in shader until real-device visual verification passes.
+ private fun chooseSkinOpticalDetail(){
+  if(loading||exportBusy||eyePreparing||diagnostic||!regionModel||eyeActive||viewer.asset==null){Toast.makeText(this,"请加载高精度分区模型并关闭虹膜试验",Toast.LENGTH_SHORT).show();return}
+  val labels=arrayOf("关闭光学精修（保留微表面）","皮肤光学精修 · 50%","皮肤光学精修 · 100%","关闭全部皮肤精修并恢复原 PBR")
+  android.app.AlertDialog.Builder(this).setTitle("皮肤光学精修 · 实验近似").setItems(labels){_,i->
+   if(loading||exportBusy||eyePreparing||diagnostic||!regionModel||eyeActive)return@setItems
+   if(i==3){disableSkinShader();skinOpticalDetail=0f;skinMicroDetail=0f;status.text="已恢复原 PBR"}
+   else if(i==0){skinOpticalDetail=0f;sssInstance?.setParameter("opticalDetail",0f);status.text=labels[i]}
+   else {
+    val previous=skinOpticalDetail
+    skinOpticalDetail=floatArrayOf(0f,.5f,1f)[i]
+    val msg=installSkinShader()
+    if(sssInstance!=null){sssInstance?.setParameter("opticalDetail",skinOpticalDetail);status.text=labels[i]}else{skinOpticalDetail=previous;status.text=msg}
+   }
+   syncAdvancedUI()
+  }.setNegativeButton("取消",null).show()
+ }
  private fun chooseSkinMicroDetail(){
   if(loading||exportBusy||eyePreparing||diagnostic||!regionModel||eyeActive||viewer.asset==null){Toast.makeText(this,"请加载高精度分区模型并关闭虹膜试验",Toast.LENGTH_SHORT).show();return}
   val labels=arrayOf("原皮肤 PBR 精修","皮肤微表面 · 50%","皮肤微表面 · 100%","关闭并恢复原 PBR")
   android.app.AlertDialog.Builder(this).setTitle("皮肤微表面近景精修").setItems(labels){_,i->
    if(loading||exportBusy||eyePreparing||diagnostic||!regionModel||eyeActive)return@setItems
-   if(i==3){disableSkinShader();skinMicroDetail=0f;status.text="已恢复原 PBR"}else{
+   if(i==3){disableSkinShader();skinMicroDetail=0f;skinOpticalDetail=0f;status.text="已恢复原 PBR"}else{
     skinMicroDetail=floatArrayOf(0f,.5f,1f)[i]
     val msg=installSkinShader()
     sssInstance?.setParameter("microDetail",skinMicroDetail)
@@ -496,6 +521,7 @@ class MainActivity : Activity() {
    mi.setParameter("softness",skinSoftness)
    mi.setParameter("poreStrength",poreStrength)
    mi.setParameter("microDetail",skinMicroDetail)
+   mi.setParameter("opticalDetail",skinOpticalDetail)
    for(binding in eligible){skinBindings.add(binding);rm.setMaterialInstanceAt(rm.getInstance(binding.entity),binding.primitive,mi)}
    sssInstance=mi
    return "独立保真 PBR 着色器 · "+eligible.size+" 个图元"
@@ -796,7 +822,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V7.5").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V7.6").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -897,6 +923,8 @@ class MainActivity : Activity() {
       "shellEvidence"->exportEvidence(false,shellTest=true)
       "skinMicroDetail"->chooseSkinMicroDetail()
       "skinMicroEvidence"->exportEvidence(false,skinTest=true)
+      "skinOpticalDetail"->chooseSkinOpticalDetail()
+      "skinOpticalEvidence"->exportEvidence(false,opticalTest=true)
       "cinematic"->{val changed=cinematic!=j.optBoolean("enabled",true);cinematic=j.optBoolean("enabled",true);prefs.edit().putBoolean("cinematic",cinematic).apply();applyStudioLook();js("window.studioLook&&studioLook("+cinematic+")");if(changed&&refineAtlas&&!diagnostic)loadMode(selected)}
       "refineAtlas"->{val next=j.optBoolean("enabled",true);if(next!=refineAtlas){refineAtlas=next;prefs.edit().putBoolean("refineAtlas",next).apply();if(!diagnostic)loadMode(selected)};js("window.studioRefine&&studioRefine("+refineAtlas+")")}
       "sss"->{
@@ -1225,13 +1253,14 @@ class MainActivity : Activity() {
    "最近 UV 检测："+uvResult+"\n"+
    "灯光：主光 DIRECTIONAL；补光与轮廓 SPOT；方案 "+lightProfile+"（A/D 为原始主光基准）\n"+
    "虹膜试验："+(if(eyePreparing)"准备中" else if(eyeActive&&loading)"加载中" else if(eyeActive&&irisBoundSlots>0)"已绑定" else "关闭")+"；强度："+(irisStrength*100).toInt()+"%；最近结果："+irisLastResult+"\n"+
+   "皮肤微表面："+(skinMicroDetail*100).toInt()+"%；光学近似："+(skinOpticalDetail*100).toInt()+"%（非真实 SSS）\n"+
    "旧皮肤 Subsurface 已移除，替换为保真 lit PBR；四套候选材质仍须逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
-  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V7.5").setMessage(report)
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V7.6").setMessage(report)
    .setNegativeButton("关闭",null).setPositiveButton("复制报告"){_,_->
     val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V7.5",report))
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V7.6",report))
     Toast.makeText(this,"诊断报告已复制",Toast.LENGTH_SHORT).show()
    }.show()
  }
@@ -2111,6 +2140,8 @@ const shellDetailButton=document.createElement('button');shellDetailButton.textC
 const shellEvidenceButton=document.createElement('button');shellEvidenceButton.textContent='导出机械漆面三档近景对照';shellEvidenceButton.style.margin='4px';shellEvidenceButton.onclick=()=>send('shellEvidence');$('check').insertAdjacentElement('afterend',shellEvidenceButton);
 const skinMicroButton=document.createElement('button');skinMicroButton.textContent='皮肤微表面精修 · 可调强度';skinMicroButton.style.margin='4px';skinMicroButton.onclick=()=>send('skinMicroDetail');$('check').insertAdjacentElement('afterend',skinMicroButton);
 const skinMicroEvidence=document.createElement('button');skinMicroEvidence.textContent='导出皮肤三档近景对照';skinMicroEvidence.style.margin='4px';skinMicroEvidence.onclick=()=>send('skinMicroEvidence');$('check').insertAdjacentElement('afterend',skinMicroEvidence);
+const skinOpticalButton=document.createElement('button');skinOpticalButton.textContent='皮肤光学精修 · 实验';skinOpticalButton.style.margin='4px';skinOpticalButton.onclick=()=>send('skinOpticalDetail');$('check').insertAdjacentElement('afterend',skinOpticalButton);
+const skinOpticalEvidence=document.createElement('button');skinOpticalEvidence.textContent='导出皮肤光学三档对照';skinOpticalEvidence.style.margin='4px';skinOpticalEvidence.onclick=()=>send('skinOpticalEvidence');$('check').insertAdjacentElement('afterend',skinOpticalEvidence);
 const poreWrap=document.createElement('label');poreWrap.style.display='block';poreWrap.style.margin='8px 4px';poreWrap.textContent='皮肤微细节 ';
 const poreValue=document.createElement('span');poreValue.textContent='0.35';poreWrap.appendChild(poreValue);
 const poreRange=document.createElement('input');poreRange.type='range';poreRange.id='studioPoresRange';poreRange.min='0';poreRange.max='1';poreRange.step='.01';poreRange.value='.35';poreRange.disabled=true;poreRange.style.width='100%';poreWrap.appendChild(poreRange);sssButton.insertAdjacentElement('afterend',poreWrap);
@@ -2170,7 +2201,8 @@ material {
         { type : sampler2d, name : metallicRoughnessMap },
         { type : float, name : softness },
         { type : float, name : poreStrength },
-        { type : float, name : microDetail }
+        { type : float, name : microDetail },
+        { type : float, name : opticalDetail }
     ],
     doubleSided : true
 }
@@ -2204,7 +2236,14 @@ fragment {
         float baseline = mr.g*(1.0-0.08*(1.0-t));
         float previousRoughness = clamp(baseline + 0.025*mask*t*detail*(1.0-baseline),0.045,1.0);
         material.roughness = clamp(previousRoughness + micro*(0.025+0.015*fade)*(1.0-previousRoughness),0.045,1.0);
-        material.reflectance = 0.5;
+        // Bounded artist approximation, not physical light transport or anatomical SSS.
+        // Zero optical strength leaves the V7.5 shader unchanged.
+        float optical = clamp(materialParams.opticalDetail,0.0,1.0)*mask;
+        float grazing = 1.0-smoothstep(0.08,0.65,getNdotV());
+        vec3 warmTint = vec3(1.035,0.993,0.975);
+        material.baseColor.rgb = mix(albedo.rgb,clamp(albedo.rgb*warmTint,0.0,1.0),optical*grazing);
+        material.reflectance = mix(0.5,0.46,optical);
+        material.roughness = clamp(material.roughness+0.025*optical*(1.0-material.roughness),0.045,1.0);
     }
 }
 MAT
