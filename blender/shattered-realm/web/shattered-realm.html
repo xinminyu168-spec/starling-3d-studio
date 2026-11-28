@@ -1,0 +1,595 @@
+<title>碎域 Shattered Realm</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;900&family=Noto+Sans+SC:wght@400;500&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one full-bleed WebGL stage; a quiet HUD hugs the corners — brand top-left, params top-right, timeline + chapters along the bottom. Single committed dark look (a night sky). */
+:root {
+  --void: #04060f;
+  --panel: rgba(8, 14, 32, 0.62);
+  --line: rgba(150, 190, 255, 0.18);
+  --ink: #dfe8ff;
+  --ink-dim: #8c9bc4;
+  --ice: #8fd8ff;
+  --ember: #ff8a4a;
+  --violet: #9b6bff;
+  --f-display: "Noto Serif SC", "Songti SC", "STSong", serif;
+  --f-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body { background: var(--void); color: var(--ink); font-family: var(--f-body); overflow: hidden; }
+#stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+#stage:active { cursor: grabbing; }
+
+.hud { position: fixed; z-index: 2; pointer-events: none; }
+.hud > * { pointer-events: auto; }
+
+.brand {
+  top: calc(env(safe-area-inset-top, 0px) + 18px);
+  left: max(16px, env(safe-area-inset-left, 0px));
+  display: grid; gap: 4px; max-width: min(380px, 60vw);
+}
+.brand h1 { margin: 0; font: 900 clamp(34px, 6vw, 56px)/1 var(--f-display); letter-spacing: 0.06em; text-shadow: 0 0 24px rgba(140, 190, 255, 0.45); }
+.brand .en { font: 600 11px/1 var(--f-mono); letter-spacing: 0.32em; color: var(--ice); text-transform: uppercase; }
+.brand p { margin: 6px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--ink-dim); text-wrap: pretty; }
+
+.panel {
+  top: calc(env(safe-area-inset-top, 0px) + 18px);
+  right: max(16px, env(safe-area-inset-right, 0px));
+  width: 236px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  padding: 12px 14px; display: grid; gap: 10px;
+}
+.panel summary { list-style: none; cursor: pointer; font: 600 11px/1 var(--f-mono); letter-spacing: 0.22em; color: var(--ice); display: flex; justify-content: space-between; }
+.panel summary::-webkit-details-marker { display: none; }
+.panel summary::after { content: "−"; color: var(--ink-dim); }
+.panel:not([open]) summary::after { content: "+"; }
+.panel .body { display: grid; gap: 11px; margin-top: 12px; }
+.seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { all: unset; text-align: center; padding: 7px 0; font-size: 12.5px; color: var(--ink-dim); cursor: pointer; }
+.seg button[aria-pressed="true"] { background: rgba(143, 216, 255, 0.16); color: var(--ink); }
+.seg button:focus-visible, .btn:focus-visible, .chip:focus-visible, #play:focus-visible { outline: 2px solid var(--ice); outline-offset: 2px; }
+.row { display: grid; gap: 5px; }
+.row label { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-dim); }
+.row output { font: 500 11px var(--f-mono); color: var(--ink); font-variant-numeric: tabular-nums; }
+input[type=range] { width: 100%; accent-color: var(--ice); height: 18px; margin: 0; }
+.btn { all: unset; cursor: pointer; text-align: center; padding: 8px 0; border-radius: 8px; border: 1px solid var(--line); font-size: 12.5px; color: var(--ink); }
+.btn:hover { background: rgba(143, 216, 255, 0.08); }
+.note { font-size: 11px; line-height: 1.55; color: var(--ink-dim); margin: 0; }
+
+.dock {
+  left: 0; right: 0; bottom: 0;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
+  display: grid; gap: 10px;
+  background: linear-gradient(to top, rgba(4, 6, 15, 0.85), rgba(4, 6, 15, 0));
+  padding-top: 40px;
+}
+.chips { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+.chips::-webkit-scrollbar { display: none; }
+.chip { all: unset; flex: none; cursor: pointer; display: grid; gap: 2px; padding: 7px 11px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel); }
+.chip b { font: 600 10px/1 var(--f-mono); letter-spacing: 0.16em; color: var(--ice); }
+.chip span { font-size: 12.5px; color: var(--ink); white-space: nowrap; }
+.chip[aria-current="true"] { border-color: var(--ice); box-shadow: 0 0 0 1px var(--ice) inset; }
+.chip.warm b { color: var(--ember); }
+.timeline { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; }
+#play { all: unset; cursor: pointer; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; border: 1px solid var(--line); background: var(--panel); }
+#play svg { width: 14px; height: 14px; fill: var(--ink); }
+.track { position: relative; }
+#scrub { width: 100%; }
+.ticks { display: flex; justify-content: space-between; font: 400 10px var(--f-mono); color: var(--ink-dim); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.frame { font: 600 13px var(--f-mono); font-variant-numeric: tabular-nums; color: var(--ink); min-width: 92px; text-align: right; }
+.frame small { color: var(--ink-dim); font-weight: 400; }
+
+#err[hidden] { display: none; }
+#err { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--ink-dim); font-size: 14px; z-index: 3; }
+
+@media (max-width: 640px) {
+  .brand p { display: none; }
+  .brand .en { letter-spacing: 0.2em; font-size: 10px; }
+  .panel { width: 200px; }
+  .panel:not([open]) { width: auto; }
+}
+@media (prefers-reduced-motion: reduce) { .chip, .btn { transition: none; } }
+</style>
+
+<canvas id="stage" aria-label="碎域：碎裂道路、悬浮碎石与能量方块的实时三维场景"></canvas>
+
+<header class="hud brand">
+  <span class="en">Shattered Realm</span>
+  <h1>碎域</h1>
+  <p>两篇 Blender 教程的实时复现：Voronoi 碎裂地面、体积散布的悬浮碎石、多层能量方块、圆环粒子与体积雾。拖动画面环视，时间轴对应 300 帧推镜。</p>
+</header>
+
+<details class="hud panel" id="panel">
+  <summary>参数</summary>
+  <div class="body">
+    <div class="seg" role="group" aria-label="显示模式">
+      <button id="m-final" aria-pressed="true">成片</button>
+      <button id="m-gray" aria-pressed="false">灰模</button>
+    </div>
+    <div class="row"><label for="density">碎石密度 <output id="o-density">1.00</output></label><input id="density" type="range" min="0.1" max="1" step="0.01" value="1"></div>
+    <div class="row"><label for="drift">噪波漂移 <output id="o-drift">7.0</output></label><input id="drift" type="range" min="0" max="16" step="0.1" value="7"></div>
+    <div class="row"><label for="turb">湍流强度 <output id="o-turb">5.0</output></label><input id="turb" type="range" min="0" max="12" step="0.1" value="5"></div>
+    <div class="row"><label for="bloom">辉光 <output id="o-bloom">1.00</output></label><input id="bloom" type="range" min="0" max="2.5" step="0.01" value="1"></div>
+    <div class="row"><label for="fog">体积雾 <output id="o-fog">0.008</output></label><input id="fog" type="range" min="0" max="0.02" step="0.0005" value="0.008"></div>
+    <button class="btn" id="reseed">重新碎裂（换种子 <span id="seedv">7</span>）</button>
+    <p class="note">漂移 = 噪波纹理 × 值；雾 0.008 与湍流 5 取自教程画面参数。</p>
+  </div>
+</details>
+
+<footer class="hud dock">
+  <nav class="chips" aria-label="教程章节">
+    <button class="chip" data-f="1" data-mode="gray"><b>上篇 01–03</b><span>碎裂地面与抬起的道路</span></button>
+    <button class="chip" data-f="60" data-mode="gray"><b>上篇 06–08</b><span>scatter 体积散布</span></button>
+    <button class="chip" data-f="120" data-mode="gray"><b>上篇 09</b><span>推镜与立方体主体</span></button>
+    <button class="chip warm" data-f="200" data-mode="final"><b>下篇 01–08</b><span>能量方块 · 雾 · 面光</span></button>
+    <button class="chip warm" data-f="300" data-mode="final"><b>下篇 09–12</b><span>发光颗粒与圆环湍流</span></button>
+  </nav>
+  <div class="timeline">
+    <button id="play" aria-label="暂停"><svg viewBox="0 0 14 14" id="play-ico"><rect x="2" y="1" width="3.5" height="12"/><rect x="8.5" y="1" width="3.5" height="12"/></svg></button>
+    <div class="track">
+      <input id="scrub" type="range" min="1" max="300" step="1" value="1" aria-label="帧">
+      <div class="ticks"><span>1</span><span>75</span><span>150</span><span>225</span><span>300</span></div>
+    </div>
+    <div class="frame" id="frame">F 001 <small>/ 300</small></div>
+  </div>
+</footer>
+
+<div id="err" hidden></div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+
+// ---------- 坐标：Blender (x, y, z上) → three (x, z, -y) ----------
+const B = (x, y, z) => new THREE.Vector3(x, z, -y);
+const CFG = { gx: [-38, 38], gy: [-16, 118], wNear: 9.5, wFar: 4.0, lift: 1.7, subject: B(0, 100, 19), size: 13, frames: 300 };
+const isSmall = Math.min(innerWidth, innerHeight) < 700 || (navigator.hardwareConcurrency || 8) <= 4;
+const Q = isSmall ? 0.55 : 1.0;
+
+function rngOf(seed) { let a = seed >>> 0; return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const smooth = (e0, e1, x) => { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+const lerp = (a, b, t) => a + (b - a) * t;
+
+const canvas = document.getElementById("stage");
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+} catch (e) {
+  const el = document.getElementById("err"); el.hidden = false; el.textContent = "这个浏览器无法启用 WebGL，场景无法显示。换用桌面版 Chrome / Edge / Safari 再试。"; throw e;
+}
+renderer.setPixelRatio(Math.min(devicePixelRatio, isSmall ? 1.5 : 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 2000);
+
+// ---------- 天空：程序化星云（下篇 04 的背景贴图在这里用着色器代替） ----------
+const NOISE = `
+float h31(vec3 p){ p = fract(p*0.3183099+.1); p*=17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }
+float vnoise(vec3 x){ vec3 i=floor(x), f=fract(x); f=f*f*(3.0-2.0*f);
+  return mix(mix(mix(h31(i),h31(i+vec3(1,0,0)),f.x),mix(h31(i+vec3(0,1,0)),h31(i+vec3(1,1,0)),f.x),f.y),
+             mix(mix(h31(i+vec3(0,0,1)),h31(i+vec3(1,0,1)),f.x),mix(h31(i+vec3(0,1,1)),h31(i+vec3(1,1,1)),f.x),f.y),f.z); }
+float fbm(vec3 p){ float a=.5, s=0.; for(int i=0;i<6;i++){ s+=a*vnoise(p); p*=2.03; a*=.5; } return s; }`;
+const skyU = { uGray: { value: 0 }, uTime: { value: 0 }, uSub: { value: CFG.subject.clone().normalize() } };
+const sky = new THREE.Mesh(new THREE.SphereGeometry(900, 48, 24), new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false, fog: false, uniforms: skyU,
+  vertexShader: `varying vec3 vD; void main(){ vD = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+  fragmentShader: NOISE + `
+  uniform float uGray, uTime; uniform vec3 uSub; varying vec3 vD;
+  void main(){
+    vec3 d = normalize(vD);
+    if(uGray>.5){ gl_FragColor = vec4(vec3(.055,.058,.065)+d.y*.03,1.); return; }
+    float n = fbm(d*2.4 + vec3(0.,0.,uTime*.004));
+    vec3 c = mix(vec3(.004,.008,.022), vec3(.01,.03,.08), smoothstep(.3,.5,n));
+    c = mix(c, vec3(.02,.42,.62), smoothstep(.52,.66,n));
+    c = mix(c, vec3(.42,.12,1.), smoothstep(.64,.74,n));
+    c = mix(c, vec3(1.,.18,.62), smoothstep(.74,.86,n));
+    float halo = pow(clamp((dot(d, normalize(uSub+vec3(0.,-.06,0.)))-.55)/.45,0.,1.),2.2);
+    float band = exp(-28.*pow(dot(d, normalize(vec3(.85,-.5,.12))),2.));
+    c *= .08 + .95*(halo + .5*band);
+    vec3 g = floor(d*320.); float r = h31(g); vec3 f = fract(d*320.)-.5;
+    float star = step(.985, r) * smoothstep(.22,.0,length(f)) * (.6+.8*h31(g+7.));
+    c += vec3(star)*(1.2 + .6*sin(uTime*2.+r*40.));
+    c += vec3(.02,.05,.12)*smoothstep(.2,-.05,d.y);
+    gl_FragColor = vec4(c,1.);
+  }`
+}));
+scene.add(sky);
+
+scene.fog = new THREE.FogExp2(0x0b1c3a, 0.008);
+
+// ---------- 灯光 ----------
+const hemi = new THREE.HemisphereLight(0x6f8fd8, 0x0a0a18, 0.45); scene.add(hemi);
+const sun = new THREE.DirectionalLight(0x8fd8ff, 1.6); sun.position.copy(B(0, 140, 150)); scene.add(sun);          // sunshine
+const strip = new THREE.DirectionalLight(0x5a9aff, 0.8); strip.position.copy(B(0, 78, 30)); strip.target.position.copy(B(0, 30, 0)); scene.add(strip, strip.target); // 150m×1m 蓝色条形面光的近似
+const red = new THREE.PointLight(0xff2040, 60, 50, 1.8); red.position.copy(B(26, 30, 5)); scene.add(red);          // 下篇 12 的红色补光
+const violet = new THREE.PointLight(0x8a5cff, 320, 80, 1.6); violet.position.copy(B(-30, 40, 24)); scene.add(violet);
+const core = new THREE.PointLight(0xff5a8c, 1000, 140, 1.5); core.position.copy(CFG.subject); scene.add(core);
+
+// 环境反射：把天空烘成 PMREM，碎石和金属内层就有星云的反光
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envScene = new THREE.Scene(); envScene.add(sky.clone());
+const envTex = pmrem.fromScene(envScene, 0.04).texture;   // 注意：先于时间推进烘焙，亮度与天空一致
+scene.environment = envTex;
+
+// ---------- 材质 ----------
+const M = {
+  stone: new THREE.MeshStandardMaterial({ color: 0x0d1424, metalness: 0.45, roughness: 0.42, flatShading: true, envMapIntensity: 0.65 }),
+  glow: new THREE.MeshStandardMaterial({ color: 0x0d1424, emissive: 0x8fd8ff, emissiveIntensity: 1.5, flatShading: true }),
+  gray: new THREE.MeshStandardMaterial({ color: 0x9a9a9e, metalness: 0, roughness: 0.75, flatShading: true }),
+  pink: new THREE.MeshStandardMaterial({ color: 0x120a1a, emissive: 0xff4aa8, emissiveIntensity: 1.1, flatShading: true }),
+};
+
+// ---------- 上篇 01–04：Voronoi 碎裂地面 + 中央抬升 + 外侧随机化 ----------
+const roadHalfWidth = y => lerp(CFG.wNear, CFG.wFar, smooth(CFG.gy[0], CFG.gy[1], y));
+function clip(poly, s, o) {
+  const mx = (s[0] + o[0]) / 2, my = (s[1] + o[1]) / 2, nx = o[0] - s[0], ny = o[1] - s[1], out = [];
+  for (let k = 0; k < poly.length; k++) {
+    const p = poly[k], q = poly[(k + 1) % poly.length];
+    const dp = (p[0] - mx) * nx + (p[1] - my) * ny, dq = (q[0] - mx) * nx + (q[1] - my) * ny;
+    if (dp <= 0) out.push(p);
+    if ((dp <= 0) !== (dq <= 0)) { const t = dp / (dp - dq); out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]); }
+  }
+  return out;
+}
+function prism(arr, poly, thick, mat4) {
+  const v = new THREE.Vector3(), T = poly.map(([x, y]) => v.set(x, 0, -y).applyMatrix4(mat4).toArray()),
+    Bt = poly.map(([x, y]) => v.set(x, -thick, -y).applyMatrix4(mat4).toArray());
+  const push = (...ps) => ps.forEach(p => arr.push(p[0], p[1], p[2]));
+  for (let k = 1; k < poly.length - 1; k++) { push(T[0], T[k], T[k + 1]); push(Bt[0], Bt[k + 1], Bt[k]); }
+  for (let k = 0; k < poly.length; k++) { const n = (k + 1) % poly.length; push(Bt[k], Bt[n], T[n]); push(Bt[k], T[n], T[k]); }
+}
+function geomFrom(arr) { const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(arr, 3)); g.computeVertexNormals(); return g; }
+
+const groundGroup = new THREE.Group(); scene.add(groundGroup);
+function buildGround(seed) {
+  groundGroup.children.forEach(c => c.geometry.dispose()); groundGroup.clear();
+  const rnd = rngOf(seed), sites = [];
+  let tries = 0; const target = Math.round(2300 * (isSmall ? 0.7 : 1));
+  while (sites.length < target && tries++ < target * 40) {
+    const x = lerp(CFG.gx[0], CFG.gx[1], rnd()), y = lerp(CFG.gy[0], CFG.gy[1], rnd()), w = roadHalfWidth(y);
+    const sp = lerp(3.1, 1.45, smooth(w * 0.4, w * 1.6, Math.abs(x)));
+    if (rnd() < (1.45 / sp) ** 2) sites.push([x, y]);
+  }
+  const grid = new Map(), K = 4, key = (a, b) => a * 10007 + b;
+  sites.forEach((s, i) => { const k = key(Math.floor(s[0] / K), Math.floor(s[1] / K)); (grid.get(k) || grid.set(k, []).get(k)).push(i); });
+  const stone = [], glow = [], m4 = new THREE.Matrix4(), e = new THREE.Euler(), q = new THREE.Quaternion();
+  sites.forEach((s, i) => {
+    const bx = Math.floor(s[0] / K), by = Math.floor(s[1] / K); let cand = [];
+    for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) cand = cand.concat(grid.get(key(bx + dx, by + dy)) || []);
+    cand = cand.filter(j => j !== i).sort((a, b) => ((sites[a][0] - s[0]) ** 2 + (sites[a][1] - s[1]) ** 2) - ((sites[b][0] - s[0]) ** 2 + (sites[b][1] - s[1]) ** 2)).slice(0, 18);
+    let poly = [[CFG.gx[0], CFG.gy[0]], [CFG.gx[1], CFG.gy[0]], [CFG.gx[1], CFG.gy[1]], [CFG.gx[0], CFG.gy[1]]];
+    for (const j of cand) { poly = clip(poly, s, sites[j]); if (poly.length < 3) return; }
+    const [sx, sy] = s, w = roadHalfWidth(sy), ax = Math.abs(sx), outer = smooth(w * 0.85, w * 3.2, ax);
+    if (rnd() < outer * 0.82) return;
+    if (sy > 102 && ax < 14) return;
+    const cx = poly.reduce((a, p) => a + p[0], 0) / poly.length, cy = poly.reduce((a, p) => a + p[1], 0) / poly.length;
+    const gap = lerp(0.1, 0.3, outer) + rnd() * 0.06, shrink = lerp(0.97, 0.62, outer * rnd());
+    const local = poly.map(([x, y]) => { const vx = x - cx, vy = y - cy, L = Math.hypot(vx, vy) || 1, f = Math.max(0.05, (L - gap) / L) * shrink; return [vx * f, vy * f]; });
+    let z = CFG.lift * Math.exp(-((sx / (w * 0.95)) ** 2)) + 0.9 * smooth(60, 115, sy) * Math.exp(-((sx / w) ** 2)) + lerp(-0.18, 0.22, rnd());
+    const tilt = lerp(3, 38, outer) * (0.4 + rnd()) * Math.PI / 180;
+    if (outer > 0.25 && rnd() < 0.35) z += lerp(0.3, 3, rnd()) * outer;
+    e.set(lerp(-tilt, tilt, rnd()), lerp(-6, 6, rnd()) * (1 + outer * 4) * Math.PI / 180, lerp(-tilt, tilt, rnd()));
+    m4.compose(B(cx, cy, z), q.setFromEuler(e), new THREE.Vector3(1, 1, 1));
+    const thick = lerp(1.1, 0.35, outer) * lerp(0.6, 1.25, rnd());
+    const isGlow = rnd() < lerp(0.045, 0.02, outer) && sy > 12;
+    prism(isGlow ? glow : stone, local, thick, m4);
+  });
+  groundGroup.add(new THREE.Mesh(geomFrom(stone), M.stone));
+  groundGroup.add(new THREE.Mesh(geomFrom(glow), M.glow));
+  groundGroup.children[1].userData.glow = true;
+  // 远景冰晶尖峰
+  const sp = [];
+  for (let n = 0; n < 44;) {
+    const side = rnd() < 0.5 ? -1 : 1, x = side * lerp(26, 85, rnd()), y = lerp(25, 175, rnd());
+    if (Math.abs(x) < 30 && y > 95) continue;
+    const h = lerp(4, 15, rnd()) * (0.5 + y / 150), r = h * lerp(0.18, 0.32, rnd()), seg = 4 + Math.floor(rnd() * 3);
+    const g = new THREE.ConeGeometry(r, h, seg, 1).toNonIndexed();
+    g.rotateY(rnd() * 6.28); g.rotateX(lerp(-0.15, 0.15, rnd())); g.rotateZ(lerp(-0.15, 0.15, rnd()));
+    g.translate(x, -1.5 + h * 0.5, -y);
+    sp.push(...g.attributes.position.array); g.dispose(); n++;
+  }
+  groundGroup.add(new THREE.Mesh(geomFrom(sp), M.stone));
+}
+
+// ---------- 实例源集合 pt 1：几种碎片外形 ----------
+function convexHull(pts) {
+  pts = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]), lo = [], up = [];
+  for (const p of pts) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+  for (const p of pts.slice().reverse()) { while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); }
+  return lo.slice(0, -1).concat(up.slice(0, -1));
+}
+const srnd = rngOf(11), shardGeos = [];
+for (let i = 0; i < 6; i++) {
+  const n = 4 + Math.floor(srnd() * 4), pts = [];
+  for (let k = 0; k < n; k++) { const a = srnd() * 6.283, r = lerp(0.55, 1.25, srnd()); pts.push([Math.cos(a) * r * lerp(0.8, 1.6, srnd()), Math.sin(a) * r]); }
+  const arr = []; const thick = lerp(0.25, 0.8, srnd());
+  prism(arr, convexHull(pts), thick, new THREE.Matrix4().makeTranslation(0, thick / 2, 0));
+  shardGeos.push(geomFrom(arr));
+}
+
+// ---------- 上篇 06–08：scatter —— 体积内分布点 + 随机旋转(0–4)/缩放(0.1–1.3) + 噪波漂移 ----------
+function scatterPoints(seed, n, box, corridor, corridorTop) {
+  const r = rngOf(seed), out = [];
+  while (out.length < n) {
+    const p = new THREE.Vector3(lerp(box[0][0], box[1][0], r()), lerp(box[0][1], box[1][1], r()), lerp(box[0][2], box[1][2], r()));
+    if (Math.abs(p.x) < corridor && p.y < corridorTop) continue;      // 镜头走廊
+    out.push({ p, rot: new THREE.Vector3(r() * 4, r() * 4, r() * 4), spin: new THREE.Vector3(r() - .5, r() - .5, r() - .5), s: 0, tint: r(), ph: r() * 100 });
+  }
+  return out;
+}
+function makeLayer(seed, total, box, smin, smax, corridor, top, matFor) {
+  const pts = scatterPoints(seed, total, box, corridor, top), r = rngOf(seed + 99);
+  pts.forEach(o => o.s = lerp(smin, smax, r()));
+  const groups = shardGeos.map(() => []);
+  pts.forEach((o, i) => groups[i % shardGeos.length].push(o));
+  return groups.map((g, i) => {
+    const mesh = new THREE.InstancedMesh(shardGeos[i], matFor(i), g.length);
+    mesh.userData.items = g; mesh.userData.full = g.length; mesh.frustumCulled = false;
+    scene.add(mesh); return mesh;
+  });
+}
+const big = makeLayer(1, Math.round(760 * Q), [[-40, -1, -124], [40, 29, 20]], 0.1, 1.3, 9, 18, () => M.stone);
+const low = makeLayer(5, Math.round(440 * Q), [[-32, 1.4, -112], [32, 7, 12]], 0.06, 0.45, 5, 5.2, () => M.stone);
+// 少量碎片自发光（对应 Blender 里 tint > 0.955 的那部分）
+const pinkLayer = makeLayer(31, Math.round(40 * Q), [[-36, 2, -120], [36, 28, 10]], 0.2, 0.9, 9, 18, () => M.pink);
+const layers = [...big, ...low, ...pinkLayer];
+
+const tmpM = new THREE.Matrix4(), tmpQ = new THREE.Quaternion(), tmpE = new THREE.Euler(), tmpV = new THREE.Vector3(), tmpS = new THREE.Vector3();
+function pseudoNoise(x, y, z, w) { // 平滑的 4D 伪噪波，返回 -0.5..0.5 的向量
+  return [Math.sin(x * 0.11 + w * 0.9 + Math.sin(z * 0.07 + w * 0.4)) * 0.5,
+          Math.sin(y * 0.13 + w * 0.7 + Math.cos(x * 0.05 - w * 0.3)) * 0.5,
+          Math.sin(z * 0.09 + w * 0.8 + Math.sin(y * 0.06 + w * 0.5)) * 0.5];
+}
+function updateLayers(t, density, drift) {
+  for (const mesh of layers) {
+    const items = mesh.userData.items, n = Math.round(mesh.userData.full * density);
+    mesh.count = n;
+    const amp = mesh.userData.amp ?? 1;
+    for (let i = 0; i < n; i++) {
+      const o = items[i], nz = pseudoNoise(o.p.x, o.p.y, o.p.z, t * 0.05 * 6 + o.ph * 0.01);
+      tmpV.set(o.p.x + nz[0] * drift * amp, o.p.y + nz[1] * drift * amp * 0.6, o.p.z + nz[2] * drift * amp);
+      tmpE.set(o.rot.x + o.spin.x * t * 0.15, o.rot.y + o.spin.y * t * 0.15, o.rot.z + o.spin.z * t * 0.15);
+      tmpM.compose(tmpV, tmpQ.setFromEuler(tmpE), tmpS.setScalar(o.s));
+      mesh.setMatrixAt(i, tmpM);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+}
+low.forEach(m => m.userData.amp = 0.35);
+
+// ---------- 下篇 09：发光颗粒 pt 2（体积布点） + 下篇 10：圆环发射器 + 湍流 ----------
+const PCOL = [new THREE.Color(0x8fd8ff), new THREE.Color(0x9b6bff), new THREE.Color(0xff8a4a)];
+function pointsMat(extra) {
+  return new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: { uTime: { value: 0 }, uTurb: { value: 5 }, uPx: { value: renderer.getPixelRatio() }, uGray: { value: 0 }, uCenter: { value: CFG.subject }, uSize: { value: 1 } },
+    vertexShader: `
+      attribute vec3 color; attribute float aSize; attribute float aPh;
+      uniform float uTime, uTurb, uPx, uGray, uSize; uniform vec3 uCenter;
+      varying vec3 vC; varying float vA;
+      void main(){
+        vec3 p = position;
+        ${extra}
+        vec4 mv = modelViewMatrix*vec4(p,1.);
+        gl_Position = projectionMatrix*mv;
+        gl_PointSize = min(aSize*uSize*uPx*(180./-mv.z), 9.*uPx);
+        float nearFade = smoothstep(2.,9.,-mv.z);
+        vC = mix(color, vec3(.85), uGray); vA = nearFade*(1.-uGray*.4)*(.65+.35*sin(uTime*1.7+aPh*6.28));
+      }`,
+    fragmentShader: `varying vec3 vC; varying float vA; uniform float uGray;
+      void main(){ vec2 d = gl_PointCoord-.5; float r = length(d); if(r>.5) discard;
+        float core = smoothstep(.5,.0,r); gl_FragColor = vec4(vC*(core*core*2.4+core*.4), vA*core); }`
+  });
+}
+function cloud(n, place, extra) {
+  const r = rngOf(n + 7), pos = new Float32Array(n * 3), col = new Float32Array(n * 3), size = new Float32Array(n), ph = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const p = place(r); pos.set([p.x, p.y, p.z], i * 3);
+    const c = PCOL[Math.floor(r() * 3)]; col.set([c.r * 1.3, c.g * 1.3, c.b * 1.3], i * 3);
+    size[i] = lerp(0.35, 1.0, r()) * (1 + 0.759 * (r() - .5)); ph[i] = r();
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3)); g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  g.setAttribute("aSize", new THREE.BufferAttribute(size, 1)); g.setAttribute("aPh", new THREE.BufferAttribute(ph, 1));
+  const pts = new THREE.Points(g, pointsMat(extra)); pts.frustumCulled = false; scene.add(pts); return pts;
+}
+const sparks = cloud(Math.round(4200 * Q), r => {
+  let p; do { p = new THREE.Vector3(lerp(-42, 42, r()), lerp(-1, 29, r()), lerp(-128, 4, r())); } while (Math.abs(p.x) < 6 && p.y < 14); return p;
+}, `p += vec3(sin(p.y*.12+uTime*.3+aPh*9.), sin(p.z*.09+uTime*.25), cos(p.x*.1+uTime*.28))*1.6;`);
+
+const ringTilt = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(-68 * Math.PI / 180, 0, 12 * Math.PI / 180));
+const ring = cloud(Math.round(2600 * Q), r => {
+  const a = r() * 6.2832, R = CFG.size * 1.15, rr = 2.6 * Math.sqrt(r()), b = r() * 6.2832;
+  return new THREE.Vector3((R + rr * Math.cos(b)) * Math.cos(a), rr * Math.sin(b), (R + rr * Math.cos(b)) * Math.sin(a));
+}, `
+  float ang = atan(p.z, p.x) + uTime*.06; float rad = length(p.xz);
+  p = vec3(cos(ang)*rad, p.y, sin(ang)*rad);
+  vec3 q = p*.11 + uTime*.12;
+  p += vec3(sin(q.y*3.1+q.z), sin(q.z*2.7+q.x*1.3), sin(q.x*2.9+q.y))*uTurb*.55;   // 湍流
+  p = (vec4(p,1.)*mat4(1.)).xyz;`);
+ring.position.copy(CFG.subject); ring.setRotationFromMatrix(ringTilt);
+ring.material.uniforms.uSize.value = 1.35;
+
+// ---------- 下篇 01/02/08：多层能量方块 ----------
+const subject = new THREE.Group(); subject.position.copy(CFG.subject); scene.add(subject);
+const tilt = new THREE.Group(); tilt.rotation.set(Math.atan(1 / Math.SQRT2), 0, Math.PI / 4); subject.add(tilt);
+const energyU = { uTime: { value: 0 }, uGray: { value: 0 } };
+const shell = new THREE.Mesh(new THREE.BoxGeometry(CFG.size, CFG.size, CFG.size), new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending, uniforms: energyU,
+  vertexShader: `varying vec3 vP; varying vec3 vN; varying vec3 vV;
+    void main(){ vP = position; vN = normalize(normalMatrix*normal); vec4 mv = modelViewMatrix*vec4(position,1.); vV = normalize(-mv.xyz); gl_Position = projectionMatrix*mv; }`,
+  fragmentShader: NOISE + `
+    uniform float uTime, uGray; varying vec3 vP; varying vec3 vN; varying vec3 vV;
+    vec3 h33(vec3 p){ p = vec3(dot(p,vec3(127.1,311.7,74.7)),dot(p,vec3(269.5,183.3,246.1)),dot(p,vec3(113.5,271.9,124.6))); return fract(sin(p)*43758.5453); }
+    vec2 vor(vec3 x){ vec3 i = floor(x), f = fract(x); float d1 = 8., d2 = 8.;
+      for(int a=-1;a<=1;a++) for(int b=-1;b<=1;b++) for(int c=-1;c<=1;c++){
+        vec3 g = vec3(a,b,c), o = h33(i+g); o = .5+.5*sin(uTime*.6+6.2831*o); vec3 r = g+o-f; float d = dot(r,r);
+        if(d<d1){ d2=d1; d1=d; } else if(d<d2){ d2=d; } }
+      return vec2(sqrt(d1), sqrt(d2)); }
+    void main(){
+      float fres = pow(1.-abs(dot(normalize(vN), normalize(vV))), 2.2);
+      if(uGray>.5){ gl_FragColor = vec4(vec3(.5)*(.12+fres*.5),1.); return; }
+      vec3 q = vP*.26 + (vec3(fbm(vP*.07), fbm(vP*.07+3.), fbm(vP*.07+7.))-.5)*1.4;
+      vec2 v = vor(q);
+      float edge = 1.-smoothstep(0.,.075,v.y-v.x);                       // 色阶：亮纹
+      float zone = smoothstep(.56,.66, fbm(vP*.05+vec3(0.,uTime*.02,0.)));  // 冷暖分区
+      vec3 cold = mix(vec3(.02,.42,.62), vec3(.42,.12,1.), fbm(vP*.1));
+      vec3 col = mix(cold, vec3(1.,.52,.22), zone);
+      vec3 c = col*edge*2.4 + vec3(.55,.85,1.)*fres*.55 + col*.06;
+      gl_FragColor = vec4(c, 1.);
+    }`
+}));
+tilt.add(shell);
+const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(CFG.size * 1.004, CFG.size * 1.004, CFG.size * 1.004)), new THREE.LineBasicMaterial({ color: 0xbfe2ff }));
+tilt.add(edges);
+const inner = new THREE.Mesh(new THREE.BoxGeometry(CFG.size * .74, CFG.size * .74, CFG.size * .74), new THREE.MeshStandardMaterial({ color: 0x140f28, metalness: 0.918, roughness: 0.05, envMapIntensity: 1.6 }));
+tilt.add(inner);
+// 碎裂发光内核
+const coreGeoMat = [new THREE.MeshBasicMaterial({ color: new THREE.Color(0x9b6bff).multiplyScalar(3) }), new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff4aa8).multiplyScalar(3) }), new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff8a4a).multiplyScalar(3) })];
+const coreItems = [];
+{ const r = rngOf(3), n = Math.round(520 * Q);
+  for (let i = 0; i < n; i++) {
+    const p = new THREE.Vector3(lerp(-1, 1, r()), lerp(-1, 1, r()), lerp(-1, 1, r())).multiplyScalar(CFG.size * .45);
+    coreItems.push({ p, rot: new THREE.Vector3(r() * 4, r() * 4, r() * 4), spin: new THREE.Vector3(r() - .5, r() - .5, r() - .5), s: lerp(.1, .5, r()), ph: r() * 100, k: Math.floor(r() * 3) });
+  } }
+const coreMeshes = coreGeoMat.map((m, k) => { const items = coreItems.filter(o => o.k === k); const im = new THREE.InstancedMesh(shardGeos[k], m, items.length); im.userData.items = items; tilt.add(im); return im; });
+
+// ---------- 镜头：300 帧线性推镜（上篇 09） ----------
+const K0 = { pos: B(0, -10, 3.6), tgt: B(0, 60, 8), roll: -1.5 }, K1 = { pos: B(0.6, 54, 5.6), tgt: B(0, 100, 15.5), roll: 1.5 };
+let yaw = 0, pitch = 0, yawT = 0, pitchT = 0;
+function placeCamera(f) {
+  const t = (f - 1) / (CFG.frames - 1);
+  camera.position.lerpVectors(K0.pos, K1.pos, t);
+  const tgt = new THREE.Vector3().lerpVectors(K0.tgt, K1.tgt, t);
+  const dir = tgt.clone().sub(camera.position);
+  dir.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+  const side = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
+  dir.applyAxisAngle(side, pitch);
+  camera.up.set(0, 1, 0);
+  camera.lookAt(camera.position.clone().add(dir));
+  camera.rotateZ(lerp(K0.roll, K1.roll, t) * Math.PI / 180);
+}
+
+// ---------- 后期：Bloom ----------
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.8, 0.35, 0.95);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false); composer.setSize(w, h);
+  camera.aspect = w / h; camera.fov = w / h < 1 ? 78 : 60; camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize); resize();
+
+// ---------- 模式：成片 / 灰模 ----------
+let gray = false;
+const state = { density: 1, drift: 7, turb: 5, bloom: 1, fog: 0.008 };
+function setMode(g) {
+  gray = g;
+  document.getElementById("m-final").setAttribute("aria-pressed", String(!g));
+  document.getElementById("m-gray").setAttribute("aria-pressed", String(g));
+  groundGroup.children.forEach(m => m.material = g ? M.gray : (m.userData.glow ? M.glow : M.stone));
+  layers.forEach(m => m.material = g ? M.gray : (pinkLayer.includes(m) ? M.pink : M.stone));
+  inner.material.color.set(g ? 0x8a8a8e : 0x140f28); inner.material.metalness = g ? 0 : 0.918; inner.material.roughness = g ? 0.7 : 0.05;
+  skyU.uGray.value = energyU.uGray.value = g ? 1 : 0;
+  [sparks, ring].forEach(p => p.material.uniforms.uGray.value = g ? 1 : 0);
+  sparks.visible = !g;
+  coreMeshes.forEach(m => m.visible = !g);
+  edges.material.color.set(g ? 0x666670 : 0xbfe2ff);
+  scene.environment = g ? null : envTex;
+  [red, violet, core, strip].forEach(l => l.visible = !g);
+  hemi.intensity = g ? 1.1 : 0.45; sun.color.set(g ? 0xffffff : 0x8fd8ff); sun.intensity = g ? 2.2 : 1.6;
+  scene.fog.color.set(g ? 0x0e0f12 : 0x0b1c3a); scene.fog.density = g ? 0.004 : state.fog;
+  bloom.strength = g ? 0 : state.bloom;
+  renderer.toneMappingExposure = g ? 1.0 : 0.95;
+}
+document.getElementById("m-final").onclick = () => setMode(false);
+document.getElementById("m-gray").onclick = () => setMode(true);
+
+const bind = (id, key, fmt, apply) => {
+  const el = document.getElementById(id), out = document.getElementById("o-" + id);
+  el.addEventListener("input", () => { state[key] = parseFloat(el.value); out.textContent = fmt(state[key]); apply && apply(); });
+};
+bind("density", "density", v => v.toFixed(2));
+bind("drift", "drift", v => v.toFixed(1));
+bind("turb", "turb", v => v.toFixed(1), () => ring.material.uniforms.uTurb.value = state.turb);
+bind("bloom", "bloom", v => v.toFixed(2), () => { if (!gray) bloom.strength = state.bloom; });
+bind("fog", "fog", v => v.toFixed(4).replace(/0$/, ""), () => { if (!gray) scene.fog.density = state.fog; });
+let seed = 7;
+document.getElementById("reseed").onclick = () => { seed = (seed * 48271 + 11) % 997 + 1; document.getElementById("seedv").textContent = seed; buildGround(seed); setMode(gray); };
+
+// ---------- 时间轴 ----------
+const scrub = document.getElementById("scrub"), frameEl = document.getElementById("frame"), playBtn = document.getElementById("play"), ico = document.getElementById("play-ico");
+let frame = 1, playing = !matchMedia("(prefers-reduced-motion: reduce)").matches, simT = 0;
+const ICON_PLAY = '<path d="M3 1.5 12.5 7 3 12.5z"/>', ICON_PAUSE = '<rect x="2" y="1" width="3.5" height="12"/><rect x="8.5" y="1" width="3.5" height="12"/>';
+function setPlaying(p) { playing = p; ico.innerHTML = p ? ICON_PAUSE : ICON_PLAY; playBtn.setAttribute("aria-label", p ? "暂停" : "播放"); }
+setPlaying(playing);
+playBtn.onclick = () => setPlaying(!playing);
+scrub.addEventListener("input", () => { frame = +scrub.value; });
+const chips = [...document.querySelectorAll(".chip")];
+chips.forEach(c => c.onclick = () => { frame = +c.dataset.f; setMode(c.dataset.mode === "gray"); yawT = pitchT = 0; });
+
+// 拖拽环视（松手后缓慢回正）
+let drag = null;
+canvas.addEventListener("pointerdown", e => { drag = { x: e.clientX, y: e.clientY, yaw: yawT, pitch: pitchT }; canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener("pointermove", e => { if (!drag) return; yawT = drag.yaw - (e.clientX - drag.x) * 0.004; pitchT = Math.max(-0.5, Math.min(0.5, drag.pitch - (e.clientY - drag.y) * 0.003)); });
+const end = () => { drag = null; };
+canvas.addEventListener("pointerup", end); canvas.addEventListener("pointercancel", end);
+
+// ---------- 主循环 ----------
+buildGround(seed);
+if (innerWidth > 640) document.getElementById("panel").open = true;
+setMode(false);
+let last = performance.now();
+function tick(now) {
+  const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now;
+  if (playing) { frame += dt * 30; if (frame > CFG.frames) frame = 1; }
+  simT += dt;
+  const t = simT;
+  if (!drag) { yawT *= 0.985; pitchT *= 0.985; }
+  yaw += (yawT - yaw) * 0.12; pitch += (pitchT - pitch) * 0.12;
+  placeCamera(frame);
+  const f = Math.round(frame);
+  scrub.value = f; frameEl.innerHTML = `F ${String(f).padStart(3, "0")} <small>/ 300</small>`;
+  const act = [1, 60, 120, 200, 300].reduce((a, v, i) => f >= v ? i : a, 0);
+  chips.forEach((c, i) => c.setAttribute("aria-current", String(i === act)));
+
+  updateLayers(t, state.density, state.drift);
+  for (const im of coreMeshes) {
+    im.userData.items.forEach((o, i) => {
+      tmpV.copy(o.p).addScaledVector(new THREE.Vector3(Math.sin(t * .5 + o.ph), Math.cos(t * .4 + o.ph), Math.sin(t * .45 + o.ph * 2)), 0.8);
+      tmpE.set(o.rot.x + o.spin.x * t * .6, o.rot.y + o.spin.y * t * .6, o.rot.z + o.spin.z * t * .6);
+      im.setMatrixAt(i, tmpM.compose(tmpV, tmpQ.setFromEuler(tmpE), tmpS.setScalar(o.s)));
+    });
+    im.instanceMatrix.needsUpdate = true;
+  }
+  subject.rotation.y = -((frame - 1) / 299) * 70 * Math.PI / 180;
+  skyU.uTime.value = energyU.uTime.value = t;
+  sparks.material.uniforms.uTime.value = ring.material.uniforms.uTime.value = t;
+  core.intensity = 1000 * (0.85 + 0.15 * Math.sin(t * 2.1));
+  sky.position.copy(camera.position);
+  composer.render();
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
