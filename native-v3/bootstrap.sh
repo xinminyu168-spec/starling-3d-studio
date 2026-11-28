@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 72
-  versionName '7.0'
+  versionCode 73
+  versionName '7.1'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -634,6 +634,7 @@ class MainActivity : Activity() {
  private var poreStrength=.35f
  private val skinMaterials=mutableListOf<MaterialInstance>()
  private var qualityLevel=2.0
+ private var detailAA=false
  private var cinematicGrading:ColorGrading?=null
  private var neutralGrading:ColorGrading?=null
  private var mainLamp=0
@@ -706,7 +707,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V7.0").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V7.1").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -787,7 +788,7 @@ class MainActivity : Activity() {
     try{
      val j=JSONObject(data)
      when(command){
-      "ready"->{js("window.studioLightProfile&&studioLightProfile("+lightProfile+")");js("window.studioIris&&studioIris("+(eyeActive&&!loading)+");window.studioIrisStrength&&studioIrisStrength("+irisStrength+")");js("window.studioPores&&studioPores("+poreStrength+")");js("window.studioSkin&&studioSkin("+skinSoftness+")");js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")}
+      "ready"->{syncDetailAA();js("window.studioLightProfile&&studioLightProfile("+lightProfile+")");js("window.studioIris&&studioIris("+(eyeActive&&!loading)+");window.studioIrisStrength&&studioIrisStrength("+irisStrength+")");js("window.studioPores&&studioPores("+poreStrength+")");js("window.studioSkin&&studioSkin("+skinSoftness+")");js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")}
       "pose"->{yaw=j.optDouble("yaw",0.0).toFloat();pitch=j.optDouble("pitch",0.0).toFloat().coerceIn(-85f,85f);zoom=j.optDouble("zoom",1.0).toFloat().coerceIn(.3f,2.5f);panX=j.optDouble("x",0.0).toFloat().coerceIn(-1.5f,1.5f);panY=j.optDouble("y",0.0).toFloat().coerceIn(-1.5f,1.5f);spinning=j.optBoolean("spin",false);applyTransform()}
       "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&(m!=selected||viewer.asset==null)){diagnostic=false;selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
       "diagnose"->{
@@ -798,7 +799,8 @@ class MainActivity : Activity() {
          diagnostic=!diagnostic;loadMode(selected)
         }.show()
       }
-      "quality"->{qualityLevel=j.optDouble("value",2.0);applyStudioLook()}
+      "quality"->{qualityLevel=j.optDouble("value",2.0);applyStudioLook();syncDetailAA()}
+      "detailAA"->toggleDetailAA()
       "cinematic"->{val changed=cinematic!=j.optBoolean("enabled",true);cinematic=j.optBoolean("enabled",true);prefs.edit().putBoolean("cinematic",cinematic).apply();applyStudioLook();js("window.studioLook&&studioLook("+cinematic+")");if(changed&&refineAtlas&&!diagnostic)loadMode(selected)}
       "refineAtlas"->{val next=j.optBoolean("enabled",true);if(next!=refineAtlas){refineAtlas=next;prefs.edit().putBoolean("refineAtlas",next).apply();if(!diagnostic)loadMode(selected)};js("window.studioRefine&&studioRefine("+refineAtlas+")")}
       "sss"->{
@@ -1123,16 +1125,17 @@ class MainActivity : Activity() {
   val report="实时渲染尺寸："+vp.width+"×"+vp.height+"\n"+
    "模型："+selected+"；独立分区："+regionModel+"\n"+
    "高级材质："+n+"/4；动态分辨率：关闭\n"+
+   "近景清晰度："+(if(detailAA&&cinematic&&qualityLevel>=2&&!diagnostic)"B · 实时 MSAA 4×，2K/4K 标准导出关闭 FXAA" else "A · 原影视抗锯齿")+"；8K 保持原导出 AA 策略\n"+
    "最近 UV 检测："+uvResult+"\n"+
    "灯光：主光 DIRECTIONAL；补光与轮廓 SPOT；方案 "+lightProfile+"（A/D 为原始主光基准）\n"+
    "虹膜试验："+(if(eyePreparing)"准备中" else if(eyeActive&&loading)"加载中" else if(eyeActive&&irisBoundSlots>0)"已绑定" else "关闭")+"；强度："+(irisStrength*100).toInt()+"%；最近结果："+irisLastResult+"\n"+
    "旧皮肤 Subsurface 已移除，替换为保真 lit PBR；四套候选材质仍须逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
-  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V7.0").setMessage(report)
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V7.1").setMessage(report)
    .setNegativeButton("关闭",null).setPositiveButton("复制报告"){_,_->
     val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V7.0",report))
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V7.1",report))
     Toast.makeText(this,"诊断报告已复制",Toast.LENGTH_SHORT).show()
    }.show()
  }
@@ -1140,7 +1143,7 @@ class MainActivity : Activity() {
   if(exportBusy||loading){Toast.makeText(this,"请先完成当前操作",Toast.LENGTH_SHORT).show();return}
   val reload=!regionModel||selected!="full"||!cinematic||!refineAtlas||diagnostic
   cinematic=true;refineAtlas=true;diagnostic=false;selected="full";qualityLevel=2.0;flat=false
-  exp=1.04f;keyPower=1f;ambientPower=1f;lightProfile=4
+  exp=1.04f;keyPower=1f;ambientPower=1f;lightProfile=4;detailAA=false;syncDetailAA()
   prefs.edit().putBoolean("cinematic",true).putBoolean("refineAtlas",true).putString("model","full").putInt("lightProfile",4).apply()
   js("window.studioMaximum&&studioMaximum()")
   applyStudioLook()
@@ -1398,7 +1401,7 @@ class MainActivity : Activity() {
   return uri
  }
  private fun rememberExport(uri:android.net.Uri,w:Int,h:Int,depth:Int,framing:Int){
-  prefs.edit().putString("lastExportUri",uri.toString()).putInt("lastExportW",w).putInt("lastExportH",h).putInt("lastExportDepth",depth).putInt("lastExportFraming",framing).apply()
+  prefs.edit().putString("lastExportUri",uri.toString()).putInt("lastExportW",w).putInt("lastExportH",h).putInt("lastExportDepth",depth).putInt("lastExportFraming",framing).putBoolean("lastExportDetailAA",detailAA&&cinematic&&qualityLevel>=2&&depth==8&&maxOf(w,h)<=3840).apply()
  }
  // Preserve the original PNG byte stream; never decode/recompress its image data.
  private fun packageExportProof(){
@@ -1446,6 +1449,7 @@ class MainActivity : Activity() {
        report.put("filename",name).put("width",w).put("height",h).put("bitsPerChannel",bits)
         .put("bytes",total).put("sha256",digest.digest().joinToString(""){"%02x".format(it)})
         .put("framing",arrayOf("current","half_body_center_2x","face_center_3.5x","mechanical_center_3x")[framing.coerceIn(0,3)])
+        .put("detailAA",prefs.getBoolean("lastExportDetailAA",false))
         .put("source","Original saved PNG bytes; IHDR verified; no image recompression")
        zip.putNextEntry(java.util.zip.ZipEntry("render-proof.json"))
        zip.write(report.toString(2).toByteArray(Charsets.UTF_8));zip.closeEntry()
@@ -1475,7 +1479,19 @@ class MainActivity : Activity() {
   }.start()
  }
  // Shared optical settings; only frame-history AA and very large export AO differ.
+ private fun syncDetailAA(){
+  js("window.studioDetailAA&&studioDetailAA("+detailAA+","+(cinematic&&qualityLevel>=2&&!diagnostic)+")")
+ }
+ private fun toggleDetailAA(){
+  if(loading||exportBusy||eyePreparing||diagnostic||viewer.asset==null)return
+  if(!cinematic||qualityLevel<2){Toast.makeText(this,"请先开启最高画质",Toast.LENGTH_SHORT).show();return}
+  detailAA=!detailAA
+  applyStudioLook();syncDetailAA()
+  status.text=if(detailAA)"近景清晰度 B · 关闭 TAA，保留 4× MSAA" else "近景清晰度 A · 原影视 TAA"
+ }
  private fun configureLook(v:com.google.android.filament.View,quality:Boolean,export:Boolean=false,longEdge:Int=0,highDepth:Boolean=false){
+  val msaa=!highDepth&&qualityLevel>1&&(!export||longEdge<=3840)
+  val clarity=detailAA&&quality&&qualityLevel>=2&&msaa
   v.setPostProcessingEnabled(!highDepth)
   v.setColorGrading(if(quality)cinematicGrading else neutralGrading)
   v.setDynamicResolutionOptions(com.google.android.filament.View.DynamicResolutionOptions().apply{enabled=false})
@@ -1491,14 +1507,14 @@ class MainActivity : Activity() {
    upsampling=com.google.android.filament.View.QualityLevel.HIGH
   })
   v.setTemporalAntiAliasingOptions(com.google.android.filament.View.TemporalAntiAliasingOptions().apply{
-   enabled=quality&&!export&&!highDepth;feedback=.18f;filterWidth=.9f;lodBias=-.5f
+   enabled=quality&&!export&&!highDepth&&!clarity;feedback=.18f;filterWidth=.9f;lodBias=-.5f
    sharpness=.18f;upscaling=false;preventFlickering=true
   })
-  v.antiAliasing=if(highDepth||quality&&!export)com.google.android.filament.View.AntiAliasing.NONE else com.google.android.filament.View.AntiAliasing.FXAA
+  v.antiAliasing=if(highDepth||clarity||quality&&!export)com.google.android.filament.View.AntiAliasing.NONE else com.google.android.filament.View.AntiAliasing.FXAA
   v.setRenderQuality(com.google.android.filament.View.RenderQuality().apply{hdrColorBuffer=com.google.android.filament.View.QualityLevel.ULTRA})
   v.setDithering(com.google.android.filament.View.Dithering.NONE)
   v.setMultiSampleAntiAliasingOptions(com.google.android.filament.View.MultiSampleAntiAliasingOptions().apply{
-   enabled=!highDepth&&qualityLevel>1&&(!export||longEdge<=3840)
+   enabled=msaa
    sampleCount=if(enabled)4 else 1
   })
  }
@@ -2014,6 +2030,8 @@ const compareMaterials=document.createElement('button');compareMaterials.textCon
 const auditButton=document.createElement('button');auditButton.textContent='渲染诊断报告';auditButton.style.margin='4px';auditButton.onclick=()=>send('renderAudit');$('check').insertAdjacentElement('afterend',auditButton);
 const exportLock=document.createElement('div');exportLock.style.cssText='display:none;position:fixed;inset:0;background:rgba(0,0,0,.48);color:white;z-index:2147483647;align-items:center;justify-content:center;text-align:center;padding:24px;touch-action:none';exportLock.textContent='正在原生离屏渲染并写入相册，请保持 APP 在前台';document.body.appendChild(exportLock);
 window.studioExportLock=on=>{exportLock.style.display=on?'flex':'none';pointers.clear()};
+const detailAAButton=document.createElement('button');detailAAButton.textContent='近景清晰度 A · 影视';detailAAButton.style.margin='4px';detailAAButton.onclick=()=>send('detailAA');$('check').insertAdjacentElement('afterend',detailAAButton);
+window.studioDetailAA=(on,available)=>{detailAAButton.textContent=on&&available?'近景清晰度 B · MSAA':'近景清晰度 A · 影视'};
 const proofButton=document.createElement('button');proofButton.textContent='原图验收 ZIP';proofButton.style.margin='4px';proofButton.onclick=()=>send('exportProof');$('check').insertAdjacentElement('afterend',proofButton);
 const exportButton=document.createElement('button');exportButton.textContent='超高清渲染输出';exportButton.style.margin='4px';exportButton.onclick=()=>send('export');$('check').insertAdjacentElement('afterend',exportButton);
 const uvButton=document.createElement('button');uvButton.style.margin='4px';uvButton.disabled=true;window.studioUvProbe=on=>{uvButton.textContent=on?'UV 对照 B · 点击回到 A':'UV 对照 A · 点击切换 B'};studioUvProbe(false);uvButton.onclick=()=>send('uvProbe');$('check').insertAdjacentElement('afterend',uvButton);
