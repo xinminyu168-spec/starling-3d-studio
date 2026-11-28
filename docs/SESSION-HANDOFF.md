@@ -18,3 +18,5 @@ First signed independent asset: Starling-Asset05.zip (110486587 bytes), SHA256 2
 Asset06 compact lens atlas: docs/asset06-compact-lens.md. Asset07 eye topology audit and material-only trial: docs/eye-optics-asset07.md. Both local unsigned candidates; no production asset update. Next prioritize correct eye segmentation/geometry and device validation instead of blindly changing eye shaders.
 
 Asset08 bilateral visible eye segmentation (248 faces, no geometry/texture/optical change): docs/eye-segmentation-asset08.md. Local unsigned candidate. Next validate eye-opening boundaries and a reversible local topology trial; no production update yet.
+
+Asset09 boundary-locked local eye geometry trial (74 modified interior vertices, 105 locked): docs/eye-curvature-asset09.md. Local unsigned candidate, no PBR acceptance. Next prioritize actual same-camera PBR comparison and validated eye-opening boundaries before independent anatomy.
