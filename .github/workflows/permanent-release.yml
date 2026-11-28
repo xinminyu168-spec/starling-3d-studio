@@ -1,0 +1,103 @@
+name: Starling permanent signed update
+on:
+  workflow_run:
+    workflows: ["Starling native Android"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful native Android build run ID
+        required: true
+permissions:
+  contents: write
+  actions: read
+  statuses: write
+concurrency:
+  group: starling-permanent-publication
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+      EXPECTED_CERT: '065d80ddf51e5a7cbc881900351ee355cdd8aa2447fee0a959d0391ecc02c7ba'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$RUNNER_TEMP/build.json"
+          jq -e --arg repo "$GITHUB_REPOSITORY" '.conclusion=="success" and .head_branch=="main" and .head_repository.full_name==$repo and .path==".github/workflows/starling-native.yml"' "$RUNNER_TEMP/build.json" >/dev/null
+          sha="$(jq -er '.head_sha' "$RUNNER_TEMP/build.json")"
+          git fetch origin main
+          git cat-file -e "$sha^{commit}" || git fetch origin "$sha"
+          git merge-base --is-ancestor "$sha" origin/main
+          test "$(git rev-parse "$sha:native-v3/bootstrap.sh")" = "$(git rev-parse origin/main:native-v3/bootstrap.sh)"
+          version="$(git show "$sha:native-v3/bootstrap.sh" | sed -nE 's/^[[:space:]]*versionCode ([0-9]+)$/\1/p')"
+          name="$(git show "$sha:native-v3/bootstrap.sh" | sed -nE "s/^[[:space:]]*versionName '([0-9.]+)'$/\1/p")"
+          [[ "$version" =~ ^[0-9]+$ && "$name" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]
+          test "$version" -gt "$(jq -er '.versionCode' app-update-v2.json)"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=$name" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: Starling-Filament-3.0-alpha
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ github.token }}
+          path: /tmp/starling-permanent
+      - name: Sign only with existing matching certificate
+        env:
+          SIGN_KEY: ${{ secrets.STARLING_MIGRATION_KEY_PK8_B64 }}
+          SIGN_CERT: ${{ secrets.STARLING_MIGRATION_CERT_DER_B64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SIGN_KEY" || -z "$SIGN_CERT" ]]; then
+            echo "::error::Existing signing material is not configured in GitHub Secrets; no release will be published."
+            exit 1
+          fi
+          umask 077
+          keydir="$(mktemp -d)"
+          trap 'rm -rf "$keydir"' EXIT
+          printf '%s' "$SIGN_KEY" | base64 -d > "$keydir/key.pk8"
+          printf '%s' "$SIGN_CERT" | base64 -d > "$keydir/cert.der"
+          test "$(sha256sum "$keydir/cert.der" | cut -d' ' -f1)" = "$EXPECTED_CERT"
+          sdk="${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools/35.0.0"
+          out="$RUNNER_TEMP/starling-permanent.apk"
+          "$sdk/apksigner" sign --key "$keydir/key.pk8" --cert "$keydir/cert.der" --alignment-preserved true --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false --out "$out" /tmp/starling-permanent/app-debug.apk
+          "$sdk/apksigner" verify --verbose --print-certs "$out" | tee "$RUNNER_TEMP/cert.txt"
+          grep -Fx "Signer #1 certificate SHA-256 digest: $EXPECTED_CERT" "$RUNNER_TEMP/cert.txt"
+          "$sdk/zipalign" -c -P 16 4 "$out"
+          "$sdk/aapt" dump badging "$out" > "$RUNNER_TEMP/badging.txt"
+          grep -F "package: name='com.xs.character.viewer' versionCode='$VERSION' versionName='$VERSION_NAME'" "$RUNNER_TEMP/badging.txt"
+          python - "$out" <<'PY'
+          import sys,zipfile
+          with zipfile.ZipFile(sys.argv[1]) as z:
+              assert z.testzip() is None
+              assert not any(x.startswith("assets/") and not x.endswith("/") and x not in ("assets/studio-controls.js","assets/studio_ibl.ktx") for x in z.namelist())
+              assert {'res/raw/studio_skin.filamat','res/raw/studio_hair.filamat','res/raw/studio_cloth.filamat','res/raw/studio_shell.filamat','res/raw/studio_uv_probe.filamat'} <= set(z.namelist())
+          PY
+      - name: Publish verified APK and manifest atomically
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git reset --hard origin/main
+          sha="$(jq -er '.head_sha' "$RUNNER_TEMP/build.json")"
+          test "$(git rev-parse "$sha:native-v3/bootstrap.sh")" = "$(git rev-parse HEAD:native-v3/bootstrap.sh)"
+          test "$VERSION" -gt "$(jq -er '.versionCode' app-update-v2.json)"
+          test "$(jq -er '.certificateSha256' app-update-v2.json)" = "$EXPECTED_CERT"
+          apk="updates/starling-new-v$VERSION.apk"
+          cp "$RUNNER_TEMP/starling-permanent.apk" "$apk"
+          hash="$(sha256sum "$apk" | cut -d' ' -f1)"
+          size="$(stat -c '%s' "$apk")"
+          jq -n --arg cert "$EXPECTED_CERT" --argjson version "$VERSION" --arg name "$VERSION_NAME" --arg url "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/$apk" --arg hash "$hash" --argjson size "$size" '{schema:1,certificateSha256:$cert,enabled:true,versionCode:$version,versionName:$name,url:$url,sha256:$hash,size:$size}' > app-update-v2.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$apk" app-update-v2.json
+          git commit -m "Publish verified signed program update $VERSION"
+          git push origin HEAD:main
