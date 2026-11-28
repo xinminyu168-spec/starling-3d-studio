@@ -4,6 +4,9 @@ on:
     workflows: ["Starling native Android"]
     types: [completed]
     branches: [main]
+  push:
+    branches: [main]
+    paths: ['updates/permanent-release-request.json']
   workflow_dispatch:
     inputs:
       run_id:
@@ -18,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   publish:
-    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository)
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -26,6 +29,38 @@ jobs:
       EXPECTED_CERT: '065d80ddf51e5a7cbc881900351ee355cdd8aa2447fee0a959d0391ecc02c7ba'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Resolve requested build
+        run: |
+          set -euo pipefail
+          id="$RUN_ID"
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            id="$(jq -er '.runId | numbers' updates/permanent-release-request.json)"
+          fi
+          [[ "$id" =~ ^[0-9]+$ ]]
+          echo "RUN_ID=$id" >> "$GITHUB_ENV"
+      - name: Check persistent signing credentials
+        env:
+          SIGN_KEY: ${{ secrets.STARLING_MIGRATION_KEY_PK8_B64 }}
+          SIGN_CERT: ${{ secrets.STARLING_MIGRATION_CERT_DER_B64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SIGN_KEY" || -z "$SIGN_CERT" ]]; then
+            echo "::error::Persistent signing credentials not configured. Configure the two repository Actions secrets once; current production release unchanged."
+            exit 1
+          fi
+          umask 077
+          d="$(mktemp -d)"
+          trap 'rm -rf "$d"' EXIT
+          printf '%s' "$SIGN_KEY" | base64 -d > "$d/key.pk8"
+          printf '%s' "$SIGN_CERT" | base64 -d > "$d/cert.der"
+          test "$(sha256sum "$d/cert.der" | cut -d' ' -f1)" = "$EXPECTED_CERT"
+          openssl pkey -inform DER -in "$d/key.pk8" -pubout -outform DER > "$d/key.pub"
+          openssl x509 -inform DER -in "$d/cert.der" -pubkey -noout | openssl pkey -pubin -outform DER > "$d/cert.pub"
+          cmp -s "$d/key.pub" "$d/cert.pub"
+          echo "Persistent credentials match the installed certificate."
       - name: Validate build provenance
         env:
           GH_TOKEN: ${{ github.token }}
