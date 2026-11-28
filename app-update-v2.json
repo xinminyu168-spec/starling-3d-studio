@@ -2,9 +2,9 @@
   "schema": 1,
   "certificateSha256": "065d80ddf51e5a7cbc881900351ee355cdd8aa2447fee0a959d0391ecc02c7ba",
   "enabled": true,
-  "versionCode": 76,
-  "versionName": "7.4",
-  "url": "https://raw.githubusercontent.com/xinminyu168-spec/starling-3d-studio/main/updates/starling-new-v76.apk",
-  "sha256": "2e67f4d67405f7db4d1cbc6dbf6d702be06c40bd17941ff5d6d4d0e8da3ec8ab",
-  "size": 10802901
+  "versionCode": 77,
+  "versionName": "7.5",
+  "url": "https://raw.githubusercontent.com/xinminyu168-spec/starling-3d-studio/main/updates/starling-new-v77.apk",
+  "sha256": "59645293234f8ac42aa60d791bfbb34791036ad27dd35d1b68dea1647232edc0",
+  "size": 10819285
 }
