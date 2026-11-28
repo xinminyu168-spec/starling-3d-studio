@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 70
-  versionName '6.8'
+  versionCode 71
+  versionName '6.9'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -706,7 +706,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V6.8").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V6.9").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -827,6 +827,7 @@ class MainActivity : Activity() {
       }
       "pores"->{poreStrength=j.optDouble("value",.35).toFloat().coerceIn(0f,1f);sssInstance?.setParameter("poreStrength",poreStrength);prefs.edit().putFloat("poreStrength",poreStrength).apply()}
       "export"->chooseExport()
+      "exportProof"->packageExportProof()
       "maximum"->maximumPreset()
       "portrait"->portraitPreset()
       "irisTest"->toggleIrisTest()
@@ -1128,10 +1129,10 @@ class MainActivity : Activity() {
    "旧皮肤 Subsurface 已移除，替换为保真 lit PBR；四套候选材质仍须逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
-  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V6.8").setMessage(report)
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V6.9").setMessage(report)
    .setNegativeButton("关闭",null).setPositiveButton("复制报告"){_,_->
     val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V6.8",report))
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V6.9",report))
     Toast.makeText(this,"诊断报告已复制",Toast.LENGTH_SHORT).show()
    }.show()
  }
@@ -1275,7 +1276,7 @@ class MainActivity : Activity() {
     if(isDestroyed){exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");return@Runnable}
     Thread{
      try{
-      if(highDepth){saveHighDepth(data,w,h);runOnUiThread{exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");status.text="已保存 "+w+"×"+h+" 64-bit PNG";Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()};return@Thread}
+      if(highDepth){val saved=saveHighDepth(data,w,h);runOnUiThread{rememberExport(saved,w,h,16);exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");status.text="已保存 "+w+"×"+h+" 64-bit PNG";Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()};return@Thread}
       val bitmap=android.graphics.Bitmap.createBitmap(w,h,android.graphics.Bitmap.Config.ARGB_8888)
       try{
        val row=IntArray(w);val rgba=data.asIntBuffer();var hasColor=false
@@ -1297,7 +1298,7 @@ class MainActivity : Activity() {
         contentResolver.openOutputStream(uri,"w")!!.use{require(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it))}
         values.clear();values.put(android.provider.MediaStore.Images.Media.IS_PENDING,0);contentResolver.update(uri,values,null,null)
        }catch(e:Throwable){contentResolver.delete(uri,null,null);throw e}
-       runOnUiThread{exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");status.text="已保存 "+w+"×"+h+" PNG";Toast.makeText(this,"已保存到相册 / Starling",Toast.LENGTH_LONG).show()}
+       runOnUiThread{rememberExport(uri,w,h,8);exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");status.text="已保存 "+w+"×"+h+" PNG";Toast.makeText(this,"已保存到相册 / Starling",Toast.LENGTH_LONG).show()}
       }finally{bitmap.recycle()}
      }catch(e:Throwable){runOnUiThread{exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");status.text="输出失败："+e.message;Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()}}
     }.start()
@@ -1310,7 +1311,7 @@ class MainActivity : Activity() {
  }
  // PNG color type 6, depth 16. Stream filtered rows through zlib and bounded IDAT chunks.
  // Input is actual float readback from RGBA16F; no expansion from an 8-bit screenshot.
- private fun saveHighDepth(data:ByteBuffer,w:Int,h:Int){
+ private fun saveHighDepth(data:ByteBuffer,w:Int,h:Int):android.net.Uri{
   val rgba=data.order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
   var valid=false
   for(i in 0 until w*h){val r=rgba.get(i*4);val g=rgba.get(i*4+1);val b=rgba.get(i*4+2);if(r.isFinite()&&g.isFinite()&&b.isFinite()&&maxOf(r,g,b)>.00001f){valid=true;break}}
@@ -1359,6 +1360,82 @@ class MainActivity : Activity() {
    }
    values.clear();values.put(android.provider.MediaStore.Images.Media.IS_PENDING,0);contentResolver.update(uri,values,null,null)
   }catch(e:Throwable){contentResolver.delete(uri,null,null);throw e}
+  return uri
+ }
+ private fun rememberExport(uri:android.net.Uri,w:Int,h:Int,depth:Int){
+  prefs.edit().putString("lastExportUri",uri.toString()).putInt("lastExportW",w).putInt("lastExportH",h).putInt("lastExportDepth",depth).apply()
+ }
+ // Preserve the original PNG byte stream; never decode/recompress its image data.
+ private fun packageExportProof(){
+  if(exportBusy||loading||eyePreparing)return
+  val raw=prefs.getString("lastExportUri",null)
+  if(raw==null){Toast.makeText(this,"请先导出一张高清 PNG",Toast.LENGTH_LONG).show();return}
+  val source=android.net.Uri.parse(raw)
+  val w=prefs.getInt("lastExportW",0);val h=prefs.getInt("lastExportH",0);val bits=prefs.getInt("lastExportDepth",0)
+  if(source.scheme!="content"||source.authority!="media"||w<=0||h<=0||bits !in listOf(8,16))return
+  exportBusy=true
+  js("window.studioExportLock&&studioExportLock(true)")
+  status.text="正在核验并打包最近一次原始 PNG"
+  Thread{
+   var dest:android.net.Uri?=null
+   try{
+    val values=android.content.ContentValues().apply{
+     put(android.provider.MediaStore.Downloads.DISPLAY_NAME,"Starling_Proof_"+w+"x"+h+"_"+bits+"bit_"+System.currentTimeMillis()+".zip")
+     put(android.provider.MediaStore.Downloads.MIME_TYPE,"application/zip")
+     put(android.provider.MediaStore.Downloads.RELATIVE_PATH,"Download/Starling")
+     put(android.provider.MediaStore.Downloads.IS_PENDING,1)
+    }
+    val target=contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,values)?:error("无法创建验收文件")
+    dest=target
+    val report=JSONObject()
+    val digest=java.security.MessageDigest.getInstance("SHA-256")
+    var total=0L
+    val name="Starling_"+w+"x"+h+"_"+bits+"bit.png"
+    contentResolver.openInputStream(source)!!.buffered().use{input->
+     val head=ByteArray(33)
+     java.io.DataInputStream(input).readFully(head)
+     val header=ByteBuffer.wrap(head).order(ByteOrder.BIG_ENDIAN)
+     require(head.copyOfRange(0,8).contentEquals(byteArrayOf(137.toByte(),80,78,71,13,10,26,10))&&header.getInt(8)==13&&header.getInt(12)==0x49484452){"源文件不是原始 PNG"}
+     require(header.getInt(16)==w&&header.getInt(20)==h&&(head[24].toInt() and 255)==bits){"源文件尺寸或色深已改变"}
+     val crc=java.util.zip.CRC32();crc.update(head,12,17)
+     require(crc.value==(header.getInt(29).toLong() and 0xffffffffL)){"PNG 文件头校验失败"}
+     contentResolver.openOutputStream(target,"w")!!.use{out->
+      java.util.zip.ZipOutputStream(out.buffered()).use{zip->
+       zip.setLevel(0)
+       zip.putNextEntry(java.util.zip.ZipEntry(name))
+       zip.write(head);digest.update(head);total+=head.size
+       val buffer=ByteArray(65536)
+       while(true){val n=input.read(buffer);if(n<0)break;zip.write(buffer,0,n);digest.update(buffer,0,n);total+=n}
+       zip.closeEntry()
+       report.put("filename",name).put("width",w).put("height",h).put("bitsPerChannel",bits)
+        .put("bytes",total).put("sha256",digest.digest().joinToString(""){"%02x".format(it)})
+        .put("source","Original saved PNG bytes; IHDR verified; no image recompression")
+       zip.putNextEntry(java.util.zip.ZipEntry("render-proof.json"))
+       zip.write(report.toString(2).toByteArray(Charsets.UTF_8));zip.closeEntry()
+      }
+     }
+    }
+    values.clear();values.put(android.provider.MediaStore.Downloads.IS_PENDING,0)
+    require(contentResolver.update(target,values,null,null)>0)
+    runOnUiThread{
+     exportBusy=false;js("window.studioExportLock&&studioExportLock(false)")
+     if(!isDestroyed&&!isFinishing){
+      status.text="原始 PNG 验收 ZIP 已保存"
+      android.app.AlertDialog.Builder(this).setTitle("原图验收 ZIP")
+       .setMessage(w.toString()+"×"+h+" · 每通道 "+bits+" bit\n原 PNG "+total+" 字节\nSHA-256："+report.getString("sha256")+"\n已保存至 Download/Starling")
+       .setNegativeButton("关闭",null).setPositiveButton("分享 ZIP"){_,_->
+        try{val share=Intent(Intent.ACTION_SEND).setType("application/zip").putExtra(Intent.EXTRA_STREAM,target).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+         share.clipData=android.content.ClipData.newRawUri("Starling ZIP",target)
+         startActivity(Intent.createChooser(share,"分享原始渲染文件"))
+        }catch(e:Exception){Toast.makeText(this,"请在文件管理器 Download/Starling 中选择 ZIP",Toast.LENGTH_LONG).show()}
+       }.show()
+     }
+    }
+   }catch(e:Throwable){
+    dest?.let{runCatching{contentResolver.delete(it,null,null)}}
+    runOnUiThread{exportBusy=false;js("window.studioExportLock&&studioExportLock(false)");if(!isDestroyed){status.text="验收打包失败："+e.message;Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()}}
+   }
+  }.start()
  }
  // Shared optical settings; only frame-history AA and very large export AO differ.
  private fun configureLook(v:com.google.android.filament.View,quality:Boolean,export:Boolean=false,longEdge:Int=0,highDepth:Boolean=false){
@@ -1900,6 +1977,7 @@ const compareMaterials=document.createElement('button');compareMaterials.textCon
 const auditButton=document.createElement('button');auditButton.textContent='渲染诊断报告';auditButton.style.margin='4px';auditButton.onclick=()=>send('renderAudit');$('check').insertAdjacentElement('afterend',auditButton);
 const exportLock=document.createElement('div');exportLock.style.cssText='display:none;position:fixed;inset:0;background:rgba(0,0,0,.48);color:white;z-index:2147483647;align-items:center;justify-content:center;text-align:center;padding:24px;touch-action:none';exportLock.textContent='正在原生离屏渲染并写入相册，请保持 APP 在前台';document.body.appendChild(exportLock);
 window.studioExportLock=on=>{exportLock.style.display=on?'flex':'none';pointers.clear()};
+const proofButton=document.createElement('button');proofButton.textContent='原图验收 ZIP';proofButton.style.margin='4px';proofButton.onclick=()=>send('exportProof');$('check').insertAdjacentElement('afterend',proofButton);
 const exportButton=document.createElement('button');exportButton.textContent='超高清渲染输出';exportButton.style.margin='4px';exportButton.onclick=()=>send('export');$('check').insertAdjacentElement('afterend',exportButton);
 const uvButton=document.createElement('button');uvButton.style.margin='4px';uvButton.disabled=true;window.studioUvProbe=on=>{uvButton.textContent=on?'UV 对照 B · 点击回到 A':'UV 对照 A · 点击切换 B'};studioUvProbe(false);uvButton.onclick=()=>send('uvProbe');$('check').insertAdjacentElement('afterend',uvButton);
 const uvAutoButton=document.createElement('button');uvAutoButton.textContent='自动 UV 一致性检测';uvAutoButton.style.margin='4px';uvAutoButton.disabled=true;uvAutoButton.onclick=()=>send('uvAuto');$('check').insertAdjacentElement('afterend',uvAutoButton);
