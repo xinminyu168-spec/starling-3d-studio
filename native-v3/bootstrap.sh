@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 64
-  versionName '6.2'
+  versionCode 65
+  versionName '6.3'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -234,17 +234,33 @@ class MainActivity : Activity() {
   }
   js("window.studioIrisStrength&&studioIrisStrength("+t+")")
  }
- private fun exportIrisEvidence(){
-  if(loading||eyePreparing||exportBusy||!eyeActive||irisMaterials.isEmpty()||!active||flat){
-   Toast.makeText(this,"请先开启虹膜试验，完成加载并打开正常光照",Toast.LENGTH_LONG).show();return
+ private fun evidenceMask():Int=(if(sssInstance!=null)1 else 0) or (if(hairInstance!=null)2 else 0) or (if(clothInstance!=null)4 else 0) or (if(shellInstance!=null)8 else 0)
+ private fun applyEvidenceMask(mask:Int){
+  disableSkinShader();disableHairShader();disableClothShader();disableShellShader()
+  val notes=mutableListOf<String>()
+  if(mask and 1!=0)notes.add(installSkinShader())
+  if(mask and 2!=0)notes.add(installHairShader())
+  if(mask and 4!=0)notes.add(installClothShader())
+  if(mask and 8!=0)notes.add(installShellShader())
+  require(evidenceMask()==mask){"材质绑定未完成："+notes.joinToString("；")}
+ }
+ private fun exportIrisEvidence()=exportEvidence(false)
+ private fun exportMaterialEvidence()=exportEvidence(true)
+ private fun exportEvidence(materials:Boolean){
+  val unavailable=loading||eyePreparing||exportBusy||!active||flat||diagnostic||!regionModel||viewer.asset==null
+  if(unavailable||(if(materials)eyeActive else !eyeActive||irisMaterials.isEmpty())){
+   Toast.makeText(this,if(materials)"请关闭虹膜试验，加载高精度分区模型并打开正常光照" else "请先开启虹膜试验，完成加载并打开正常光照",Toast.LENGTH_LONG).show();return
   }
+  val masks=intArrayOf(0,1,2,4,8,15)
+  val labels=if(materials)arrayOf("A  /  PBR","B  /  SKIN","C  /  HAIR","D  /  FABRIC","E  /  SHELL","F  /  ALL") else arrayOf("A  /  0%","B  /  50%","C  /  100%")
+  val previousMask=evidenceMask()
   val vp=viewer.view.viewport
   if(vp.width<=0||vp.height<=0)return
   val w=if(vp.width>=vp.height)1536 else (1536.0*vp.width/vp.height).toInt().coerceAtLeast(2)
   val h=if(vp.height>=vp.width)1536 else (1536.0*vp.height/vp.width).toInt().coerceAtLeast(2)
   val am=getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
   val mem=android.app.ActivityManager.MemoryInfo();am.getMemoryInfo(mem)
-  if(mem.lowMemory||mem.availMem-mem.threshold<w.toLong()*h*104+256L*1024*1024){
+  if(mem.lowMemory||mem.availMem-mem.threshold<w.toLong()*h*(if(materials)144L else 104L)+256L*1024*1024){
    Toast.makeText(this,"可用内存不足，未执行对照导出",Toast.LENGTH_LONG).show();return
   }
   val previous=irisStrength
@@ -255,22 +271,25 @@ class MainActivity : Activity() {
   var released=false
   exportBusy=true
   js("window.studioExportLock&&studioExportLock(true)")
-  status.text="正在采集固定构图虹膜对照"
+  status.text=if(materials)"正在采集固定构图六档材质对照" else "正在采集固定构图虹膜对照"
+  var restoreError=""
   fun release(){
    if(released)return
    released=true
-   irisStrength=previous
-   if(eyeActive&&irisMaterials.isNotEmpty())applyIrisStrength()
+   try{
+    if(materials){applyEvidenceMask(previousMask);syncAdvancedUI()}
+    else{irisStrength=previous;if(eyeActive&&irisMaterials.isNotEmpty())applyIrisStrength()}
+   }catch(e:Throwable){restoreError="；原材质恢复异常："+e.message;syncAdvancedUI()}
    v?.let{it.setRenderTarget(null);it.setScene(null);it.setCamera(null);engine.destroyView(it)}
    target?.let{engine.destroyRenderTarget(it)};depth?.let{engine.destroyTexture(it)};color?.let{engine.destroyTexture(it)}
   }
   fun finish(message:String){
    exportBusy=false
    js("window.studioExportLock&&studioExportLock(false)")
-   if(!isDestroyed){status.text=message;Toast.makeText(this,message,Toast.LENGTH_LONG).show()}
+   if(!isDestroyed){status.text=message+restoreError;Toast.makeText(this,status.text,Toast.LENGTH_LONG).show()}
   }
   try{
-   val buffers=Array(3){ByteBuffer.allocateDirect(w*h*4).order(ByteOrder.LITTLE_ENDIAN)}
+   val buffers=Array(labels.size){ByteBuffer.allocateDirect(w*h*4).order(ByteOrder.LITTLE_ENDIAN)}
    val c=Texture.Builder().width(w).height(h).levels(1).sampler(Texture.Sampler.SAMPLER_2D).format(Texture.InternalFormat.RGBA8).usage(Texture.Usage.COLOR_ATTACHMENT or Texture.Usage.SAMPLEABLE or Texture.Usage.BLIT_SRC).build(engine);color=c
    val d=Texture.Builder().width(w).height(h).levels(1).sampler(Texture.Sampler.SAMPLER_2D).format(Texture.InternalFormat.DEPTH24).usage(Texture.Usage.DEPTH_ATTACHMENT).build(engine);depth=d
    val rt=RenderTarget.Builder().texture(RenderTarget.AttachmentPoint.COLOR,c).texture(RenderTarget.AttachmentPoint.DEPTH,d).build(engine);target=rt
@@ -278,17 +297,17 @@ class MainActivity : Activity() {
    off.setScene(viewer.scene);off.setCamera(viewer.camera);off.setRenderTarget(rt);off.setViewport(Viewport(0,0,w,h))
    configureLook(off,cinematic,true,1536,false)
    fun capture(i:Int){
-    irisStrength=strengths[i];applyIrisStrength()
+    if(materials)applyEvidenceMask(masks[i]) else {irisStrength=strengths[i];applyIrisStrength()}
     viewer.renderer.renderStandaloneView(off)
     viewer.renderer.readPixels(rt,0,0,w,h,Texture.PixelBufferDescriptor(buffers[i],Texture.Format.RGBA,Texture.Type.UBYTE,1,0,0,0,handler,Runnable{
      try{
       if(isDestroyed||!active){release();finish("对照中断：APP 离开前台");return@Runnable}
-      if(i<2){capture(i+1);return@Runnable}
+      if(i+1<labels.size){capture(i+1);return@Runnable}
       release()
       Thread{
        try{
-        saveIrisSheet(buffers,w,h)
-        runOnUiThread{finish("虹膜三档对照已保存到相册 / Starling")}
+        saveEvidenceSheet(buffers,w,h,labels,materials)
+        runOnUiThread{finish(if(materials)"六档材质对照已保存到相册 / Starling" else "虹膜三档对照已保存到相册 / Starling")}
        }catch(e:Throwable){runOnUiThread{finish("对照输出失败："+e.message)}}
       }.start()
      }catch(e:Throwable){release();finish("对照采集失败："+e.message)}
@@ -298,29 +317,30 @@ class MainActivity : Activity() {
    capture(0)
   }catch(e:Throwable){release();finish("对照采集失败："+e.message)}
  }
- private fun saveIrisSheet(buffers:Array<ByteBuffer>,w:Int,h:Int){
+ private fun saveEvidenceSheet(buffers:Array<ByteBuffer>,w:Int,h:Int,labels:Array<String>,materials:Boolean){
   val band=64
-  val sheet=android.graphics.Bitmap.createBitmap(w,(h+band)*3,android.graphics.Bitmap.Config.ARGB_8888)
+  val cols=if(materials)2 else 1
+  val sheet=android.graphics.Bitmap.createBitmap(w*cols,(h+band)*((buffers.size+cols-1)/cols),android.graphics.Bitmap.Config.ARGB_8888)
   try{
    val canvas=android.graphics.Canvas(sheet)
    canvas.drawColor(android.graphics.Color.rgb(22,25,31))
    val paint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply{color=android.graphics.Color.WHITE;textSize=28f}
-   val labels=arrayOf("A  /  0%","B  /  50%","C  /  100%")
    val row=IntArray(w)
    for(i in buffers.indices){
-    val offset=i*(h+band)
-    canvas.drawText(labels[i],20f,(offset+42).toFloat(),paint)
+    val offset=(i/cols)*(h+band)
+    val left=(i%cols)*w
+    canvas.drawText(labels[i],left+20f,(offset+42).toFloat(),paint)
     val rgba=buffers[i].asIntBuffer()
     var colored=false
     for(y in 0 until h){
      rgba.position(y*w);rgba.get(row,0,w)
      for(x in 0 until w){val q=row[x];if((q and 0xffffff)!=0)colored=true;row[x]=0xff000000.toInt() or ((q and 255) shl 16) or (q and 0xff00) or ((q ushr 16) and 255)}
-     sheet.setPixels(row,0,w,0,offset+band+y,w,1)
+     sheet.setPixels(row,0,w,left,offset+band+y,w,1)
     }
     require(colored){"第 "+(i+1)+" 帧回读为空"}
    }
    val values=android.content.ContentValues().apply{
-    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME,"Starling_Iris_ABC_"+System.currentTimeMillis()+".png")
+    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME,(if(materials)"Starling_Materials_ABCDEF_" else "Starling_Iris_ABC_")+System.currentTimeMillis()+".png")
     put(android.provider.MediaStore.Images.Media.MIME_TYPE,"image/png")
     put(android.provider.MediaStore.Images.Media.RELATIVE_PATH,"Pictures/Starling")
     put(android.provider.MediaStore.Images.Media.IS_PENDING,1)
@@ -684,7 +704,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V6.2").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V6.3").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -808,6 +828,7 @@ class MainActivity : Activity() {
       "irisTest"->toggleIrisTest()
       "irisStrength"->chooseIrisStrength()
       "irisEvidence"->exportIrisEvidence()
+      "materialEvidence"->exportMaterialEvidence()
       "lightProfile"->chooseLightProfile()
       "materialCompare"->compareMaterials()
       "safeMaterials"->restoreSafeMaterials()
@@ -1084,10 +1105,10 @@ class MainActivity : Activity() {
    "四套高级材质已统一 glTF UV 方向（flipUV=false），需逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
-  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V6.2").setMessage(report)
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V6.3").setMessage(report)
    .setNegativeButton("关闭",null).setPositiveButton("复制报告"){_,_->
     val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V6.2",report))
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V6.3",report))
     Toast.makeText(this,"诊断报告已复制",Toast.LENGTH_SHORT).show()
    }.show()
  }
@@ -1844,6 +1865,7 @@ window.studioMaximum=()=>{if(window.studioLightProfile)studioLightProfile(0);stu
 const irisButton=document.createElement('button');irisButton.textContent='虹膜反射 · 试验关闭';irisButton.style.margin='4px';irisButton.onclick=()=>send('irisTest');$('check').insertAdjacentElement('afterend',irisButton);
 const irisStrengthButton=document.createElement('button');irisStrengthButton.textContent='虹膜 A/B 对照';irisStrengthButton.style.margin='4px';irisStrengthButton.disabled=true;irisStrengthButton.onclick=()=>send('irisStrength');irisButton.insertAdjacentElement('afterend',irisStrengthButton);
 window.studioIris=on=>{irisButton.textContent='虹膜反射 · '+(on?'试验开启':'试验关闭');irisStrengthButton.disabled=!on};
+const materialEvidenceButton=document.createElement('button');materialEvidenceButton.textContent='导出六档材质对照';materialEvidenceButton.style.margin='4px';materialEvidenceButton.onclick=()=>send('materialEvidence');$('check').insertAdjacentElement('afterend',materialEvidenceButton);
 const irisEvidenceButton=document.createElement('button');irisEvidenceButton.textContent='导出虹膜三档对照';irisEvidenceButton.style.margin='4px';irisEvidenceButton.onclick=()=>send('irisEvidence');irisStrengthButton.insertAdjacentElement('afterend',irisEvidenceButton);
 window.studioIrisStrength=t=>{irisStrengthButton.textContent='虹膜 A/B · '+Math.round(t*100)+'%'};
 const portraitButton=document.createElement('button');portraitButton.textContent='肖像精修 · 单项对照';portraitButton.style.margin='4px';portraitButton.onclick=()=>send('portrait');$('check').insertAdjacentElement('afterend',portraitButton);
