@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 82
-  versionName '8.0'
+  versionCode 83
+  versionName '8.1'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -736,12 +736,12 @@ class MainActivity : Activity() {
   if(p>=.9999f){
    loading=false;loadBuffer=null
    try{
-    if((sourceBaseline||candidateMode!=0)&&!diagnostic){
+    if((sourceBaseline||candidateMode!=0||selected=="imported")&&!diagnostic){
      pendingAtlas=emptyList()
      modelAudit+="\n源 GLB 原生 glTF 材质加载：未进行显式图集重绑、粗糙度修饰、分区法线调整或自定义着色器替换。灯光及色调映射仍为当前工作台设置。"
     }else bindAtlas()
    }catch(e:Exception){
-    if(candidateMode!=0){loadMode(selected);return}
+    if(candidateMode!=0||selected=="imported"){returnToBuiltIn();return}
     if(fallbackRegion(e.message?:"纹理绑定异常"))return
     status.text="显式纹理绑定失败："+e.message;js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")");return
    }
@@ -749,17 +749,21 @@ class MainActivity : Activity() {
    js("window.studioIris&&studioIris("+eyeActive+")")
    if(eyeActive)modelAudit+="\n虹膜试验：69 个候选面 · 原模型未覆盖"
    val presetReport=if(maxPresetPending){maxPresetPending=false;"最高画质 · 均衡影视 + 基础分区材质；自定义着色器关闭"}else null
-   status.text=presetReport?:if(eyeActive)"虹膜反射试验 · "+irisLastResult else if(diagnostic)"仅色彩图诊断 · 已加载" else if(candidateMode!=0)"候选 "+candidateMode+" · glTF 原生独立贴图" else if(sourceBaseline)"原始 GLB PBR · 未修改材质" else if(cinematic)"影视渲染 · 纹理绑定完成" else "保真渲染 · 纹理绑定完成"
+   status.text=presetReport?:if(eyeActive)"虹膜反射试验 · "+irisLastResult else if(diagnostic)"仅色彩图诊断 · 已加载" else if(selected=="imported")"本地 GLB · 原生材质" else if(candidateMode!=0)"候选 "+candidateMode+" · glTF 原生独立贴图" else if(sourceBaseline)"原始 GLB PBR · 未修改材质" else if(cinematic)"影视渲染 · 纹理绑定完成" else "保真渲染 · 纹理绑定完成"
    js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")
   }else if(android.os.SystemClock.elapsedRealtime()-loadStart>60000L){
    loading=false
-   viewer.destroyModel();clearExplicit();loadBuffer=null
-   if(candidateMode!=0){loadMode(selected);return}
+   viewer.destroyModel();clearExplicit();loadBuffer=null;loadedModelFile=null
+   if(candidateMode!=0||selected=="imported"){returnToBuiltIn();return}
    if(fallbackRegion("纹理加载超时"))return
    status.text="纹理加载超时，请切换轻量模型"
    js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")")
   }
  }
+ private var loadedModelFile:File?=null
+ private var importedFile:File?=null
+ private var pendingModelExport:File?=null
+ private var modelPickerOpen=false
  private var candidateMode=0
  private var candidateImporting=false
  private val candidateSpecs=mapOf(
@@ -870,7 +874,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V8.0").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V8.1").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -961,13 +965,13 @@ class MainActivity : Activity() {
    if(data.length>4096)return
    runOnUiThread{
     if(!initialized||isDestroyed)return@runOnUiThread
-    if((exportBusy||eyePreparing||candidateImporting)&&command!="ready")return@runOnUiThread
+    if((exportBusy||eyePreparing||candidateImporting||modelPickerOpen)&&command!="ready")return@runOnUiThread
     try{
      val j=JSONObject(data)
      when(command){
       "ready"->{syncDetailAA();js("window.studioCandidate&&studioCandidate("+candidateMode+")");js("window.studioSourceBaseline&&studioSourceBaseline("+sourceBaseline+");window.studioLensZoom&&studioLensZoom("+lensZoom+")");js("window.studioLightProfile&&studioLightProfile("+lightProfile+")");js("window.studioIris&&studioIris("+(eyeActive&&!loading)+");window.studioIrisStrength&&studioIrisStrength("+irisStrength+")");js("window.studioPores&&studioPores("+poreStrength+")");js("window.studioSkin&&studioSkin("+skinSoftness+")");js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")}
       "pose"->{yaw=j.optDouble("yaw",0.0).toFloat();pitch=j.optDouble("pitch",0.0).toFloat().coerceIn(-85f,85f);zoom=j.optDouble("zoom",1.0).toFloat().coerceIn(.3f,2.5f);panX=j.optDouble("x",0.0).toFloat().coerceIn(-1.5f,1.5f);panY=j.optDouble("y",0.0).toFloat().coerceIn(-1.5f,1.5f);spinning=j.optBoolean("spin",false);applyTransform()}
-      "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&(m!=selected||viewer.asset==null)){diagnostic=false;selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
+      "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&(m!=selected||viewer.asset==null||candidateMode!=0)){diagnostic=false;selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
       "diagnose"->{
        android.app.AlertDialog.Builder(this@MainActivity).setTitle("纹理加载诊断")
         .setMessage("引擎：Filament 1.56.0\n"+modelAudit+"\n加载进度："+lastLoadPercent.coerceAtLeast(0)+"%\n仅色彩图诊断使用当前规格的临时原始模型，绕过光照、金属度与法线，不修改原文件。进入后点击 UV 采样对照可切换 glTF 原材质与自定义采样器。")
@@ -989,8 +993,8 @@ class MainActivity : Activity() {
       "skinOpticalEvidence"->exportEvidence(false,opticalTest=true)
       "hairOpticalDetail"->chooseHairOpticalDetail()
       "hairOpticalEvidence"->exportEvidence(false,hairTest=true)
-      "cinematic"->{val changed=cinematic!=j.optBoolean("enabled",true);cinematic=j.optBoolean("enabled",true);prefs.edit().putBoolean("cinematic",cinematic).apply();applyStudioLook();js("window.studioLook&&studioLook("+cinematic+")");if(changed&&refineAtlas&&!diagnostic)loadMode(selected)}
-      "refineAtlas"->{val next=j.optBoolean("enabled",true);if(next!=refineAtlas){refineAtlas=next;prefs.edit().putBoolean("refineAtlas",next).apply();if(!diagnostic)loadMode(selected)};js("window.studioRefine&&studioRefine("+refineAtlas+")")}
+      "cinematic"->{val changed=cinematic!=j.optBoolean("enabled",true);cinematic=j.optBoolean("enabled",true);prefs.edit().putBoolean("cinematic",cinematic).apply();applyStudioLook();js("window.studioLook&&studioLook("+cinematic+")");if(changed&&refineAtlas&&!diagnostic&&selected!="imported"&&candidateMode==0)loadMode(selected)}
+      "refineAtlas"->{val next=j.optBoolean("enabled",true);if(next!=refineAtlas){refineAtlas=next;prefs.edit().putBoolean("refineAtlas",next).apply();if(!diagnostic&&selected!="imported"&&candidateMode==0)loadMode(selected)};js("window.studioRefine&&studioRefine("+refineAtlas+")")}
       "sss"->{
        if(!loading&&regionModel&&!diagnostic){
         status.text=if(j.optBoolean("enabled",false))installSkinShader()else{disableSkinShader();"已恢复皮肤 PBR"}
@@ -1029,6 +1033,9 @@ class MainActivity : Activity() {
       "materialCompare"->compareMaterials()
       "safeMaterials"->restoreSafeMaterials()
       "sourceBaseline"->toggleSourceBaseline()
+      "modelImport"->{if(!loading&&!exportBusy){modelPickerOpen=true;try{startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"),7)}catch(e:Exception){modelPickerOpen=false;throw e}}}
+      "modelLibrary"->{if(!loading&&!exportBusy)showModelLibrary()}
+      "modelExport"->{if(!loading&&!exportBusy)beginModelExport()}
       "candidateImport"->{if(!loading&&!exportBusy)startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"),83)}
       "candidateSelect"->{if(!loading&&!exportBusy)chooseCandidate()}
       "signedAssetImport"->{if(!loading&&!exportBusy)startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"),84)}
@@ -1048,6 +1055,11 @@ class MainActivity : Activity() {
   }
  }
  private fun loadMode(mode:String) {
+  if(mode=="imported"){
+   val file=importedFile
+   if(file!=null&&file.isFile&&openImportedNow(file))return
+   returnToBuiltIn();return
+  }
   candidateMode=0;js("window.studioCandidate&&studioCandidate(0)")
   eyeActive=false
   js("window.studioIris&&studioIris(false)")
@@ -1117,6 +1129,45 @@ class MainActivity : Activity() {
  private fun syncAdvancedUI(){
   js("window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")
  }
+ private fun returnToBuiltIn(){
+  selected="full";importedFile=null;candidateMode=0;sourceBaseline=true;diagnostic=false;eyeActive=false;regionModel=false;maxPresetPending=false
+  js("window.studioSourceBaseline&&studioSourceBaseline(true)")
+  loadMode(selected)
+ }
+ private fun openImportedNow(f:File):Boolean{
+  selected="imported";importedFile=f;candidateMode=0;sourceBaseline=false;diagnostic=false;eyeActive=false;regionModel=false;maxPresetPending=false;advancedMask=0;spinning=false
+  js("window.studioCandidate&&studioCandidate(0);window.studioSourceBaseline&&studioSourceBaseline(false);window.studioIris&&studioIris(false)")
+  return load(f)
+ }
+ private fun openLibraryModel(f:File){
+  candidateImporting=true;status.text="正在校验本地模型"
+  Thread{
+   val result=runCatching{ModelFiles.verify(f);require(shaCandidate(f)==f.nameWithoutExtension){"本地文件哈希不匹配"}}
+   runOnUiThread{
+    candidateImporting=false
+    if(isDestroyed||isFinishing)return@runOnUiThread
+    result.fold(onSuccess={if(!openImportedNow(f))returnToBuiltIn()},onFailure={status.text="本地模型无效："+it.message})
+   }
+  }.start()
+ }
+ private fun showModelLibrary(){
+  val models=ModelFiles.list(this)
+  val labels=arrayOf("返回内置高精度模型")+models.map{f->(prefs.getString("model-name-"+f.name,f.name.take(12)+".glb")?:f.name)+" · "+String.format(java.util.Locale.ROOT,"%.1f MB",f.length()/1000000.0)}.toTypedArray()
+  android.app.AlertDialog.Builder(this).setTitle("本地模型库").setItems(labels){_,i->
+   if(loading||exportBusy||candidateImporting)return@setItems
+   if(i==0)returnToBuiltIn() else openLibraryModel(models[i-1])
+  }.setNegativeButton("关闭",null).show()
+ }
+ private fun beginModelExport(){
+  val f=loadedModelFile
+  if(f==null||!f.isFile||viewer.asset==null){Toast.makeText(this,"请先完成模型加载",Toast.LENGTH_SHORT).show();return}
+  android.app.AlertDialog.Builder(this).setTitle("导出当前 GLB").setMessage("保存当前加载的完整模型文件，包括几何、原始材质、内嵌贴图。工作台实时灯光、镜头和自定义着色器不写入模型。").setNegativeButton("取消",null).setPositiveButton("选择保存位置"){_,_->
+   pendingModelExport=f;modelPickerOpen=true
+   val name=if(selected=="imported")prefs.getString("model-name-"+f.name,"model.glb")?: "model.glb" else f.name
+   try{startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("model/gltf-binary").putExtra(Intent.EXTRA_TITLE,name),85)}
+   catch(e:Exception){pendingModelExport=null;modelPickerOpen=false;status.text="无法打开保存位置："+e.message}
+  }.show()
+ }
  private fun chooseCandidate(){
   val extra=SignedAssets.ids(this)
   val ids=listOf(0,3,4)+extra
@@ -1152,6 +1203,7 @@ class MainActivity : Activity() {
  }
  private fun toggleSourceBaseline(){
   if(loading||exportBusy||eyePreparing||viewer.asset==null){Toast.makeText(this,"请先完成模型加载",Toast.LENGTH_SHORT).show();return}
+  if(selected=="imported"){status.text="本地 GLB 已使用原生材质";return}
   val next=!sourceBaseline
   diagnostic=false;eyeActive=false;maxPresetPending=false;advancedMask=0
   sourceBaseline=next
@@ -1373,10 +1425,10 @@ class MainActivity : Activity() {
    "旧皮肤 Subsurface 已移除，替换为保真 lit PBR；四套候选材质仍须逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
-  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V8.0").setMessage(report)
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V8.1").setMessage(report)
    .setNegativeButton("关闭",null).setPositiveButton("复制报告"){_,_->
     val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V8.0",report))
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V8.1",report))
     Toast.makeText(this,"诊断报告已复制",Toast.LENGTH_SHORT).show()
    }.show()
  }
@@ -1801,6 +1853,11 @@ class MainActivity : Activity() {
    val jsonSize=b.getInt(12);require(jsonSize in 2..4_000_000&&jsonSize%4==0&&20+jsonSize+8<=b.limit());require(b.getInt(16)==0x4e4f534a)
    val jsonBytes=ByteArray(jsonSize);b.position(20);b.get(jsonBytes)
    val doc=JSONObject(String(jsonBytes,Charsets.UTF_8).trim())
+   val nativeLocal=selected=="imported"
+   val atlas=mutableListOf<Atlas>()
+   if(nativeLocal){
+    modelAudit="本地文件："+f.name+"\\n材质："+(doc.optJSONArray("materials")?.length()?:0)+" · 图像："+(doc.optJSONArray("images")?.length()?:0)+" · 原生 glTF"
+   }else{
    val materials=doc.optJSONArray("materials")?:error("缺少材质")
    val images=doc.optJSONArray("images")?:error("缺少纹理")
    val textures=doc.optJSONArray("textures")?:error("缺少纹理绑定")
@@ -1840,7 +1897,6 @@ class MainActivity : Activity() {
    }
    val views=doc.getJSONArray("bufferViews")
    val dataStart=28+jsonSize
-   val atlas=mutableListOf<Atlas>()
    fun add(parameter:String,ref:JSONObject?,srgb:Boolean){
     if(ref==null)return
     require(ref.optInt("texCoord",0)==0)
@@ -1857,9 +1913,11 @@ class MainActivity : Activity() {
     add("baseColorMap",pbr.optJSONObject("baseColorTexture"),true)
     if(!diagnostic){add("metallicRoughnessMap",pbr.optJSONObject("metallicRoughnessTexture"),false);add("normalMap",mat.optJSONObject("normalTexture"),false)}
    }
+   }
    b.rewind()
-   val input=if(diagnostic)diagnosticGlb(b,doc,jsonSize) else b
+   val input=if(diagnostic&&!nativeLocal)diagnosticGlb(b,doc,jsonSize) else b
    viewer.destroyModel()
+   loadedModelFile=null
    clearExplicit()
    pendingAtlas=atlas
    loadBuffer=input
@@ -1868,8 +1926,9 @@ class MainActivity : Activity() {
    viewer.transformToUnitCube()
    val tm=viewer.engine.transformManager
    baseTransform=tm.getTransform(tm.getInstance(viewer.asset!!.root),FloatArray(16))
+   loadedModelFile=f
    applyTransform();status.text="正在加载模型纹理";js("window.studioProgress&&studioProgress(0)");return true
-  } catch(e:Exception) { loading=false;viewer.destroyModel();clearExplicit();loadBuffer=null;status.text="加载失败："+e.message;js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")");return false }
+  } catch(e:Exception) { loading=false;viewer.destroyModel();clearExplicit();loadBuffer=null;loadedModelFile=null;status.text="加载失败："+e.message;js("window.studioFailure&&studioFailure("+JSONObject.quote(status.text.toString())+")");return false }
  }
  // Temporary diagnostic copy only. The normal rendering path never changes GLB bytes.
  private fun diagnosticGlb(source:ByteBuffer,doc:JSONObject,jsonSize:Int):ByteBuffer{
@@ -1895,6 +1954,23 @@ class MainActivity : Activity() {
  }
  override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
   super.onActivityResult(requestCode,resultCode,data)
+  if(requestCode==85){
+   modelPickerOpen=false
+   val f=pendingModelExport;pendingModelExport=null
+   val uri=data?.data
+   if(resultCode!=RESULT_OK||uri==null||f==null)return
+   candidateImporting=true;status.text="正在导出模型"
+   Thread{
+    try{
+     require(f.isFile)
+     var count=0L
+     contentResolver.openOutputStream(uri,"wt")!!.use{out->f.inputStream().use{count=it.copyTo(out,65536)};out.flush()}
+     require(count==f.length()){"导出长度不一致"}
+     runOnUiThread{candidateImporting=false;if(!isDestroyed)status.text="GLB 已导出 · "+count+" 字节"}
+    }catch(e:Exception){runOnUiThread{candidateImporting=false;if(!isDestroyed)status.text="导出失败（目标可能存在不完整文件）："+e.message}}
+   }.start()
+   return
+  }
   if(requestCode==84){
    val uri=data?.data
    if(resultCode!=RESULT_OK||uri==null||candidateImporting||loading||exportBusy)return
@@ -1944,20 +2020,18 @@ class MainActivity : Activity() {
    }.start()
    return
   }
-  if(requestCode!=7||resultCode!=RESULT_OK) return
-  val uri=data?.data?:return
-  status.text="正在读取模型…"
-  Thread {
-   val tmp=File(filesDir,"incoming.glb")
-   try {
-    contentResolver.openInputStream(uri)!!.use { input -> tmp.outputStream().use { out ->
-     val buf=ByteArray(65536); var count=0L
-     while(true) { val n=input.read(buf); if(n<0) break; count+=n; require(count<=150_000_000L); out.write(buf,0,n) }
-    } }
-    java.io.RandomAccessFile(tmp,"r").use { r -> require(r.length()>=20); require(Integer.reverseBytes(r.readInt())==0x46546c67); require(Integer.reverseBytes(r.readInt())==2); require(Integer.reverseBytes(r.readInt()).toLong()==r.length()) }
-    val dst=File(filesDir,"character.glb"); require(tmp.renameTo(dst))
-    runOnUiThread { if(!isDestroyed) { selected="imported"; load(dst) } }
-   } catch(e:Exception) { tmp.delete(); runOnUiThread { status.text="导入失败："+e.message } }
+  if(requestCode!=7)return
+  modelPickerOpen=false
+  val uri=data?.data
+  if(resultCode!=RESULT_OK||uri==null||candidateImporting||loading||exportBusy)return
+  candidateImporting=true;status.text="正在读取并校验 GLB"
+  Thread{
+   try{
+    val name=runCatching{contentResolver.query(uri,arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),null,null,null)?.use{if(it.moveToFirst())it.getString(0) else null}}.getOrNull()?.replace(Regex("[^\\p{L}\\p{N}._ -]"),"_")?.take(96)?.let{if(it.endsWith(".glb",true))it else it+".glb"}?:"model.glb"
+    val f=contentResolver.openInputStream(uri)!!.use{ModelFiles.install(this,it)}
+    prefs.edit().putString("model-name-"+f.name,name).apply()
+    runOnUiThread{candidateImporting=false;if(!isDestroyed&&!isFinishing){if(!openImportedNow(f))returnToBuiltIn()}}
+   }catch(e:Exception){runOnUiThread{candidateImporting=false;if(!isDestroyed)status.text="导入失败："+e.message}}
   }.start()
  }
  private fun sync(approved:String?=null,manual:Boolean=false) {
@@ -2171,6 +2245,92 @@ object IrisPatch {
  }
 }
 EOF
+cat > app/src/main/java/com/starling/filament/ModelFiles.kt <<'EOF'
+package com.starling.filament
+import android.content.Context
+import java.io.File
+import java.io.InputStream
+import java.io.RandomAccessFile
+import java.security.MessageDigest
+import org.json.JSONObject
+
+object ModelFiles {
+ private const val MAX=150_000_000L
+ private fun dir(c:Context)=File(c.filesDir,"user-models")
+ private fun hex(b:ByteArray)=b.joinToString(""){"%02x".format(it)}
+ fun list(c:Context):List<File> = (dir(c).listFiles()?:emptyArray<File>()).filter{it.isFile&&it.name.matches(Regex("[0-9a-f]{64}\\.glb"))}.sortedByDescending{it.lastModified()}
+ fun verify(f:File){
+  val size=f.length()
+  require(size in 28L..MAX){"仅支持不超过 150 MB 的 GLB"}
+  RandomAccessFile(f,"r").use{r->
+   fun read()=Integer.reverseBytes(r.readInt())
+   require(read()==0x46546c67&&read()==2&&read().toLong()==size){"GLB 2.0 文件头错误"}
+   val n=read();require(n in 2..4_000_000&&n%4==0&&20L+n+8<=size&&read()==0x4e4f534a){"GLB JSON 块错误"}
+   val b=ByteArray(n);r.readFully(b)
+   val doc=JSONObject(String(b,Charsets.UTF_8).trim())
+   require(doc.getJSONObject("asset").getString("version")=="2.0")
+   val bin=read();require(bin>=0&&bin%4==0&&read()==0x004e4942&&r.filePointer+bin==size){"GLB 二进制块错误"}
+   val buffers=doc.getJSONArray("buffers");require(buffers.length()==1){"只支持自包含 GLB"}
+   val buffer=buffers.getJSONObject(0)
+   require(!buffer.has("uri")&&buffer.getLong("byteLength") in 1L..bin.toLong()&&bin-buffer.getLong("byteLength")<=3){"不支持外部缓冲"}
+   val views=doc.optJSONArray("bufferViews")?:org.json.JSONArray()
+   require(views.length()<=50000)
+   for(i in 0 until views.length()){
+    val v=views.getJSONObject(i);val offset=v.optLong("byteOffset",0);val length=v.getLong("byteLength")
+    require(v.getInt("buffer")==0&&offset in 0L..bin.toLong()&&length in 1L..(buffer.getLong("byteLength")-offset)){"缓冲区范围错误"}
+   }
+   val images=doc.optJSONArray("images")?:org.json.JSONArray();require(images.length()<=64)
+   var pixels=0L
+   val dataStart=28L+n
+   for(i in 0 until images.length()){
+    val image=images.getJSONObject(i)
+    require(!image.has("uri")&&image.getString("mimeType") in listOf("image/png","image/jpeg")){"仅支持内嵌 PNG/JPEG 贴图"}
+    val v=views.getJSONObject(image.getInt("bufferView"))
+    val len=v.getInt("byteLength");require(len in 1..32_000_000){"贴图编码体积超限"}
+    val bytes=ByteArray(len);r.seek(dataStart+v.optLong("byteOffset",0));r.readFully(bytes)
+    val opt=android.graphics.BitmapFactory.Options().apply{inJustDecodeBounds=true}
+    android.graphics.BitmapFactory.decodeByteArray(bytes,0,len,opt)
+    require(opt.outWidth in 1..8192&&opt.outHeight in 1..8192){"贴图尺寸超限或格式错误"}
+    pixels+=opt.outWidth.toLong()*opt.outHeight;require(pixels<=100_663_296L){"贴图总像素超限"}
+   }
+   val meshes=doc.getJSONArray("meshes");require(meshes.length() in 1..2048){"网格数量异常"}
+   val access=doc.getJSONArray("accessors");require(access.length() in 1..50000)
+   var vertices=0L;var triangles=0L;var primitives=0
+   for(i in 0 until meshes.length()){
+    val ps=meshes.getJSONObject(i).getJSONArray("primitives")
+    for(k in 0 until ps.length()){
+     primitives++;require(primitives<=8192)
+     val p=ps.getJSONObject(k)
+     val count=access.getJSONObject(p.getJSONObject("attributes").getInt("POSITION")).getLong("count")
+     require(count in 1L..5_000_000L)
+     vertices+=count;require(vertices<=12_000_000L){"顶点预算超限"}
+     val indexed=if(p.has("indices"))access.getJSONObject(p.getInt("indices")).getLong("count") else count
+     require(indexed in 1L..18_000_000L)
+     triangles+=indexed;require(triangles<=30_000_000L){"索引预算超限"}
+    }
+   }
+   require(primitives>0)
+  }
+ }
+ @Synchronized fun install(c:Context,input:InputStream):File{
+  val d=dir(c).apply{mkdirs()}
+  require(d.usableSpace>MAX+10_000_000L){"可用空间不足"}
+  val temp=File.createTempFile("incoming-",".part",d)
+  try{
+   val md=MessageDigest.getInstance("SHA-256");var total=0L
+   temp.outputStream().use{out->val b=ByteArray(65536);while(true){val n=input.read(b);if(n<0)break;total+=n;require(total<=MAX){"模型超过 150 MB"};md.update(b,0,n);out.write(b,0,n)};out.fd.sync()}
+   verify(temp)
+   val dst=File(d,hex(md.digest())+".glb")
+   if(dst.exists()){
+    val existing=MessageDigest.getInstance("SHA-256")
+    dst.inputStream().use{stream->val b=ByteArray(65536);while(true){val n=stream.read(b);if(n<0)break;existing.update(b,0,n)}}
+    require(dst.length()==total&&hex(existing.digest())==dst.nameWithoutExtension){"本地模型文件损坏"}
+   }else android.system.Os.rename(temp.absolutePath,dst.absolutePath)
+   return dst
+  }finally{temp.delete()}
+ }
+}
+EOF
 cat > app/src/main/java/com/starling/filament/SignedAssets.kt <<'EOF'
 package com.starling.filament
 import android.content.Context
@@ -2372,7 +2532,7 @@ window.studioCloud=s=>{try{apply(JSON.parse(s));send('save',params())}catch(e){}
 window.studioRestore=s=>{try{let p=JSON.parse(s||"{}");apply(p)}catch(e){studioDefaults()}};
 window.studioStatus=s=>{$('status').textContent=s};
 window.studioModel=m=>{$('model').value=m;$('switchModel').textContent=m==='full'?'切换轻量版':'切换高精度'};
-window.studioLoaded=m=>{$('skin').disabled=true;sssButton.disabled=true;hairButton.disabled=true;shellButton.disabled=true;studioShell(false);clothButton.disabled=true;studioCloth(false);studioSSS(false);studioHair(false);studioModel(m);$('msg').style.display='none';$('modelinfo').textContent=m==='full'?'离线高精度模型 · 4K':'离线轻量模型 · 2K'};
+window.studioLoaded=m=>{$('skin').disabled=true;sssButton.disabled=true;hairButton.disabled=true;shellButton.disabled=true;studioShell(false);clothButton.disabled=true;studioCloth(false);studioSSS(false);studioHair(false);studioModel(m);$('msg').style.display='none';$('modelinfo').textContent=m==='imported'?'本地导入 GLB · 原生材质':m==='full'?'离线高精度模型 · 4K':'离线轻量模型 · 2K'};
 function change(m){studioModel(m);$('msg').style.display='block';$('msg').textContent='正在加载模型…';send('model',{mode:m})}
 $('model').onchange=()=>change($('model').value);$('switchModel').onclick=()=>change($('model').value==='full'?'mobile':'full');
 $('endpoint').value='https://xinminyu168-spec.github.io/starling-3d-studio/';$('endpoint').readOnly=true;$('check').onclick=()=>send('check');$('rollback').onclick=()=>send('rollback');
@@ -2414,6 +2574,9 @@ const portraitButton=document.createElement('button');portraitButton.textContent
 const lightEvidenceButton=document.createElement('button');lightEvidenceButton.textContent='导出六档布光对照';lightEvidenceButton.style.margin='4px';lightEvidenceButton.onclick=()=>send('lightEvidence');$('check').insertAdjacentElement('afterend',lightEvidenceButton);
 const lightingButton=document.createElement('button');lightingButton.textContent='灯光校准 · 均衡影视';lightingButton.style.margin='4px';lightingButton.onclick=()=>send('lightProfile');$('check').insertAdjacentElement('afterend',lightingButton);
 window.studioLightProfile=i=>{lightingButton.textContent='灯光校准 · '+['标准主光','柔和棚拍','轮廓造型','角色肖像','均衡影视','轮廓增强'][i]};
+const modelImportButton=document.createElement('button');modelImportButton.textContent='导入模型 GLB';modelImportButton.style.margin='4px';modelImportButton.onclick=()=>send('modelImport');$('check').insertAdjacentElement('afterend',modelImportButton);
+const modelLibraryButton=document.createElement('button');modelLibraryButton.textContent='本地模型库';modelLibraryButton.style.margin='4px';modelLibraryButton.onclick=()=>send('modelLibrary');$('check').insertAdjacentElement('afterend',modelLibraryButton);
+const modelExportButton=document.createElement('button');modelExportButton.textContent='导出当前模型 GLB';modelExportButton.style.margin='4px';modelExportButton.onclick=()=>send('modelExport');$('check').insertAdjacentElement('afterend',modelExportButton);
 const signedAssetButton=document.createElement('button');signedAssetButton.textContent='导入独立签名资产更新包';signedAssetButton.style.margin='4px';signedAssetButton.onclick=()=>send('signedAssetImport');$('check').insertAdjacentElement('afterend',signedAssetButton);
 const candidateImport=document.createElement('button');candidateImport.textContent='导入已验证候选 GLB';candidateImport.style.margin='4px';candidateImport.onclick=()=>send('candidateImport');$('check').insertAdjacentElement('afterend',candidateImport);
 const candidateSelect=document.createElement('button');candidateSelect.style.margin='4px';window.studioCandidate=id=>{candidateSelect.textContent=id?'候选 '+id+' · 切换 A/B':'候选资产 A/B 对照'};studioCandidate(0);candidateSelect.onclick=()=>send('candidateSelect');$('check').insertAdjacentElement('afterend',candidateSelect);
