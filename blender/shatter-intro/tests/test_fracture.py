@@ -104,3 +104,51 @@ def test_cli_roundtrip(fixture_glb, tmp_path):
     assert len(doc["buffers"]) == 1
     assert {m["name"] for m in doc["materials"]} == set(MATERIALS)
     assert len(doc["nodes"]) == len(meshes)
+
+
+def normal_signature(objs):
+    """Sorted multiset of (world position, world split normal) per face corner."""
+    sig = []
+    for o in objs:
+        me = o.data
+        mw = o.matrix_world
+        nm = mw.to_3x3().inverted_safe().transposed()
+        for p in me.polygons:
+            for li in p.loop_indices:
+                pos = mw @ me.vertices[me.loops[li].vertex_index].co
+                n = (nm @ me.corner_normals[li].vector).normalized()
+                sig.append((tuple(round(c, 3) + 0.0 for c in pos), tuple(n)))
+    return sig
+
+
+def assert_same_normals(a, b, tol=2e-3):
+    """Multiset equality of (position, normal) with a float tolerance on normals."""
+    from collections import defaultdict
+    assert len(a) == len(b)
+    buckets = defaultdict(list)
+    for pos, n in a:
+        buckets[pos].append(n)
+    for pos, n in b:
+        cands = buckets[pos]
+        for i, m in enumerate(cands):
+            if max(abs(x - y) for x, y in zip(n, m)) <= tol:
+                cands.pop(i)
+                break
+        else:
+            raise AssertionError(f"no matching normal at {pos}: {n}")
+
+
+def test_normals_preserved(fixture_glb, tmp_path):
+    import fracture_character as fc
+    src = load_source(fixture_glb)
+    src_sig = normal_signature([src])
+    # smooth part really has non-flat normals (guards the fixture)
+    assert len({tuple(round(c, 2) for c in s[1]) for s in src_sig}) > 1000
+    shards = fc.fracture_object(src, 300, 7)
+    assert_same_normals(normal_signature(shards), src_sig)
+
+    out = tmp_path / "normals.glb"
+    r = subprocess.run([sys.executable, str(SCRIPT), "--", str(fixture_glb), str(out),
+                        "--shards", "300", "--seed", "7"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert_same_normals(normal_signature(import_glb(out)), src_sig)

@@ -45,9 +45,21 @@ def fracture_object(obj, count, seed):
     """Split `obj` into face-owned shard objects. Returns the new objects."""
     mw = obj.matrix_world.copy()
     src = obj.data
+    # Triangulate through a modifier on a temp object so custom (split) normals survive.
+    tmp = obj.copy()
+    tmp.data = src.copy()
+    bpy.context.scene.collection.objects.link(tmp)
+    tmp.modifiers.new("tri", "TRIANGULATE").min_vertices = 4
+    bpy.context.view_layer.update()
+    ev = tmp.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    tri = bpy.data.meshes.new_from_object(ev)
+    bpy.data.objects.remove(tmp)
+    # world-space per-loop normals of the triangulated source
+    nmat = mw.to_3x3().inverted_safe().transposed()
+    loop_normals = [(nmat @ n.vector).normalized() for n in tri.corner_normals]
+    loop_start = [p.loop_start for p in tri.polygons]
     bm = bmesh.new()
-    bm.from_mesh(src)
-    bmesh.ops.triangulate(bm, faces=bm.faces[:])
+    bm.from_mesh(tri)
     bm.faces.ensure_lookup_table()
 
     wcent = [mw @ f.calc_center_median() for f in bm.faces]
@@ -67,6 +79,7 @@ def fracture_object(obj, count, seed):
         faces = [bm.faces[i] for i in by_cell[cell]]
         sb = bmesh.new()
         slayers = [sb.loops.layers.uv.new(n) for n in uv_names]
+        nrm = []
         vmap = {}
         for f in faces:
             for v in f.verts:
@@ -79,12 +92,14 @@ def fracture_object(obj, count, seed):
             nf = sb.faces.new([vmap[v.index] for v in f.verts])
             nf.material_index = f.material_index
             nf.smooth = f.smooth
+            nrm.extend(loop_normals[loop_start[f.index] + j] for j in range(len(f.verts)))
             for src_l, dst_l in zip(f.loops, nf.loops):
                 for sl, dl in zip(uv_layers, slayers):
                     dst_l[dl].uv = src_l[sl].uv
         me = bpy.data.meshes.new(f"{obj.name}_shard_{k:04d}")
         sb.to_mesh(me)
         sb.free()
+        me.normals_split_custom_set(nrm)
         for m in src.materials:
             me.materials.append(m)
         so = bpy.data.objects.new(me.name, me)
@@ -95,6 +110,7 @@ def fracture_object(obj, count, seed):
         shards.append(so)
         centers.append(centroid.z)
     bm.free()
+    bpy.data.meshes.remove(tri)
     bpy.context.view_layer.update()
 
     lo, hi = min(centers), max(centers)

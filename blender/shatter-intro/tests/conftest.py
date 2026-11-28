@@ -30,6 +30,7 @@ def _build_model():
                                   matrix=Matrix.Translation((0, 0, 1.9)), calc_uvs=True)
     for f in bm.faces:
         f.material_index = 1
+        f.smooth = True  # smooth-shaded part: recomputed shard normals would differ
     n0 = len(bm.faces)
 
     def box(size, loc, mat, cuts=14):
