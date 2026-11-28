@@ -1,0 +1,11 @@
+# V7.9 semantic correction candidate 02 — four-view audit
+
+Date: 2026-11-28. Local candidate based on candidate 01 (SHA256 3de6ab627ac3fb85b046f863e4372104d0c8979662ac3f5e766dd87df3f0f9d6). Candidate 02 SHA256: 2ce07371cf573aa5abd908c01095b0a0f3df86d063f2aae3311a12d3d468d584.
+
+Method: depth-tested triangle ID raster at 760x760, orthographic azimuths 0/90/180/270, scale 2400 pixels per GLB coordinate unit, center Y=.77. Manually selected interior hair polygons and front goggle lens polygon; each accepted triangle has at least one visible pixel and >=95% of visible pixels within an annotated region in the selecting view. General/Skin labels eligible for hair reassignment in four views; an additional conservative rear hair mask allows fabric-to-hair. Goggle lens interior Skin/Hair labels return to General. Conflicting selected labels excluded (0 detected). No color classifier or extrapolation to hidden faces.
+
+Measured: 52,725 triangles reassigned to hair (4,809 from fabric); 26 lens triangles reassigned to General. Candidate 01 counts [1075281,93372,70285,316564,405150]; candidate 02 [1029004,91759,122984,311755,405150] for General/Skin/Hair/Fabric/Shell. Total 1,960,652 triangles preserved. All binary data outside contiguous material index partitions is byte-identical, and the exact oriented triangle multiset across all partitions verified by lexicographic sort. The original asset and candidate 01 remain unchanged.
+
+Visual inspection of the four-view CPU material-ID preview shows substantial correction of rear pink hair and portions of blue strands, but some strands retain fabric/general labels. Eye boundaries and hidden surfaces remain unverified; goggle lens is not a separate new optical material. Annotation is a partial heuristic, not semantic ground truth. No Filament PBR or device render acceptance. No private model, texture or diagnostic images uploaded to GitHub. Do not update trusted asset hashes until actual render validation. V7.8 official signing remains unresolved; no manifest change in this step.
+
+Next: focused oblique/lower hair annotation and eye/eyelid/lens boundary review; then local PBR original/candidate comparison with identical camera and lighting before app integration.
