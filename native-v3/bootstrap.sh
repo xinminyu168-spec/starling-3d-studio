@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 67
-  versionName '6.5'
+  versionCode 68
+  versionName '6.6'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -691,8 +691,8 @@ class MainActivity : Activity() {
   lm.setIntensity(lm.getInstance(viewer.light),0f)
   lm.setShadowCaster(lm.getInstance(viewer.light),false)
   mainLamp=addStudioLight(.58f,-.58f,-.58f,46000f,1f,.96f,.92f,true)
-  fillLamp=addStudioLight(-.6f,-.22f,-.8f,20000f,.93f,.97f,1f,false)
-  rimLamp=addStudioLight(-.38f,-.5f,.78f,30000f,.87f,.94f,1f,false)
+  fillLamp=addStudioSpot(3.0f,1.2f,4.0f,.97f,.98f,1f)
+  rimLamp=addStudioSpot(2.3f,2.8f,-3.6f,.90f,.96f,1f)
   cinematicGrading=ColorGrading.Builder().quality(ColorGrading.QualityLevel.ULTRA).toneMapping(ColorGrading.ToneMapping.ACES).saturation(.94f).contrast(1.025f).build(engine)
   neutralGrading=ColorGrading.Builder().quality(ColorGrading.QualityLevel.HIGH).toneMapping(ColorGrading.ToneMapping.LINEAR).saturation(1f).contrast(1f).build(engine)
   applyStudioLook()
@@ -706,7 +706,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V6.5").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V6.6").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -759,6 +759,7 @@ class MainActivity : Activity() {
   android.opengl.Matrix.multiplyMM(result,0,m,0,base,0)
   val tm=viewer.engine.transformManager
   tm.setTransform(tm.getInstance(asset.root),result)
+  positionStudioSpots()
  }
  private fun setEnvironment(a:Float,r:Float){
   // Keep Filament's calibrated SH and prefiltered reflections together.
@@ -892,6 +893,21 @@ class MainActivity : Activity() {
   viewer.scene.addEntity(id)
   return id
  }
+ // Filament 1.56 supports a single directional light. Fill/rim use positional spots.
+ private fun addStudioSpot(dx:Float,dy:Float,dz:Float,r:Float,g:Float,b:Float):Int{
+  val id=EntityManager.get().create()
+  val length=kotlin.math.sqrt(dx*dx+dy*dy+dz*dz)
+  LightManager.Builder(LightManager.Type.SPOT).position(panX+dx,panY+dy,-4f+dz)
+   .direction(-dx/length,-dy/length,-dz/length).color(r,g,b)
+   .spotLightCone(.50f,.85f).falloff(12f).intensityCandela(0f).castShadows(false).build(viewer.engine,id)
+  viewer.scene.addEntity(id)
+  return id
+ }
+ private fun positionStudioSpots(){
+  val lm=viewer.engine.lightManager
+  if(fillLamp!=0)lm.setPosition(lm.getInstance(fillLamp),panX+3.0f,panY+1.2f,0f)
+  if(rimLamp!=0)lm.setPosition(lm.getInstance(rimLamp),panX+2.3f,panY+2.8f,-7.6f)
+ }
  // Render a second view of the actual scene. Never capture or upscale the WebView.
  private fun enableAdvancedMaterials():String{
   if(!regionModel||diagnostic||loading)return "最高画质：分区模型不可用，保留原材质"
@@ -961,7 +977,7 @@ class MainActivity : Activity() {
   }.setNegativeButton("取消",null).show()
  }
  private fun chooseLightProfile(){
-  val labels=arrayOf("电影三点布光 · 标准","柔和棚拍 · 提升补光","轮廓造型 · 减弱补光、增强轮廓","角色肖像 · 正面补光、柔和轮廓")
+  val labels=arrayOf("标准 · 原始主光与 IBL","柔和棚拍 · 独立正面补光","轮廓造型 · 独立背侧轮廓光","角色肖像 · 原始肖像主光")
   android.app.AlertDialog.Builder(this).setTitle("灯光校准").setSingleChoiceItems(labels,lightProfile){dialog,i->
    lightProfile=i;dialog.dismiss()
    lighting(exp,if(flat)0f else keyPower,if(flat)2f else ambientPower)
@@ -1104,14 +1120,15 @@ class MainActivity : Activity() {
    "模型："+selected+"；独立分区："+regionModel+"\n"+
    "高级材质："+n+"/4；动态分辨率：关闭\n"+
    "最近 UV 检测："+uvResult+"\n"+
+   "灯光：主光 DIRECTIONAL；补光与轮廓 SPOT；方案 "+lightProfile+"（A/D 为原始主光基准）\n"+
    "虹膜试验："+(if(eyePreparing)"准备中" else if(eyeActive&&loading)"加载中" else if(eyeActive&&irisBoundSlots>0)"已绑定" else "关闭")+"；强度："+(irisStrength*100).toInt()+"%；最近结果："+irisLastResult+"\n"+
    "旧皮肤 Subsurface 已移除，替换为保真 lit PBR；四套候选材质仍须逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
-  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V6.5").setMessage(report)
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V6.6").setMessage(report)
    .setNegativeButton("关闭",null).setPositiveButton("复制报告"){_,_->
     val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V6.5",report))
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V6.6",report))
     Toast.makeText(this,"诊断报告已复制",Toast.LENGTH_SHORT).show()
    }.show()
  }
@@ -1390,14 +1407,13 @@ class MainActivity : Activity() {
    if(lightProfile==3&&!flat)lm.setDirection(mi,.38f,-.43f,-.82f)else lm.setDirection(mi,.58f,-.58f,-.58f)
    lm.setIntensity(mi,(if(cinematic)46000f else 38000f)*k*(if(lightProfile==3&&!flat).84f else 1f))
   }
-  val fillRatio=when(lightProfile){1->1.30f;2->.65f;3->1.65f;else->1f}
-  val rimRatio=when(lightProfile){1->.72f;2->1.25f;3->.72f;else->1f}
-  if(fillLamp!=0){
-   val fi=lm.getInstance(fillLamp)
-   if(lightProfile==3)lm.setDirection(fi,-.22f,-.08f,-1f)else lm.setDirection(fi,-.6f,-.22f,-.8f)
-   lm.setIntensity(fi,(if(cinematic)20000f else 30000f)*(if(flat)0f else fillRatio))
-  }
-  if(rimLamp!=0)lm.setIntensity(lm.getInstance(rimLamp),(if(cinematic)30000f else 12000f)*(if(flat)0f else rimRatio))
+  // A and D retain the V6.5 effective single-key + IBL baseline.
+  // B and C exercise distinct true positional lights; intensities are candela, not lux.
+  val fillCd=when(lightProfile){1->130000f;2->20000f;else->0f}
+  val rimCd=when(lightProfile){1->25000f;2->160000f;else->0f}
+  positionStudioSpots()
+  if(fillLamp!=0)lm.setIntensityCandela(lm.getInstance(fillLamp),if(flat||diagnostic)0f else fillCd*k)
+  if(rimLamp!=0)lm.setIntensityCandela(lm.getInstance(rimLamp),if(flat||diagnostic)0f else rimCd*k)
   setEnvironment(a,if(flat)0f else reflectPower)
  }
  private fun load(f:File):Boolean {
@@ -1873,8 +1889,8 @@ const irisEvidenceButton=document.createElement('button');irisEvidenceButton.tex
 window.studioIrisStrength=t=>{irisStrengthButton.textContent='虹膜 A/B · '+Math.round(t*100)+'%'};
 const portraitButton=document.createElement('button');portraitButton.textContent='肖像精修 · 单项对照';portraitButton.style.margin='4px';portraitButton.onclick=()=>send('portrait');$('check').insertAdjacentElement('afterend',portraitButton);
 const lightEvidenceButton=document.createElement('button');lightEvidenceButton.textContent='导出四档布光对照';lightEvidenceButton.style.margin='4px';lightEvidenceButton.onclick=()=>send('lightEvidence');$('check').insertAdjacentElement('afterend',lightEvidenceButton);
-const lightingButton=document.createElement('button');lightingButton.textContent='灯光校准 · 标准三点布光';lightingButton.style.margin='4px';lightingButton.onclick=()=>send('lightProfile');$('check').insertAdjacentElement('afterend',lightingButton);
-window.studioLightProfile=i=>{lightingButton.textContent='灯光校准 · '+['标准三点布光','柔和棚拍','轮廓造型','角色肖像'][i]};
+const lightingButton=document.createElement('button');lightingButton.textContent='灯光校准 · 标准主光';lightingButton.style.margin='4px';lightingButton.onclick=()=>send('lightProfile');$('check').insertAdjacentElement('afterend',lightingButton);
+window.studioLightProfile=i=>{lightingButton.textContent='灯光校准 · '+['标准主光','柔和棚拍','轮廓造型','角色肖像'][i]};
 const safeButton=document.createElement('button');safeButton.textContent='恢复原始 PBR 材质';safeButton.style.margin='4px';safeButton.onclick=()=>send('safeMaterials');$('check').insertAdjacentElement('afterend',safeButton);
 const compareMaterials=document.createElement('button');compareMaterials.textContent='高级材质 / PBR 对照';compareMaterials.style.margin='4px';compareMaterials.onclick=()=>send('materialCompare');$('check').insertAdjacentElement('afterend',compareMaterials);
 const auditButton=document.createElement('button');auditButton.textContent='渲染诊断报告';auditButton.style.margin='4px';auditButton.onclick=()=>send('renderAudit');$('check').insertAdjacentElement('afterend',auditButton);
