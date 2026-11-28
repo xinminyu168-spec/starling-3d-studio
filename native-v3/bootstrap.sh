@@ -27,8 +27,8 @@ android {
   applicationId 'com.xs.character.viewer'
   minSdk 26
   targetSdk 32
-  versionCode 69
-  versionName '6.7'
+  versionCode 70
+  versionName '6.8'
   ndk { abiFilters 'arm64-v8a' }
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -110,7 +110,7 @@ class MainActivity : Activity() {
  private var irisStrength=1f
  private val irisMaterials=mutableListOf<MaterialInstance>()
  private var irisLastResult="尚未启用"
- private var lightProfile=0
+ private var lightProfile=4
  private var advancedMask=0
  private var loadStart=0L
  private var lastLoadPercent=-1
@@ -598,7 +598,7 @@ class MainActivity : Activity() {
    applyStudioLook()
    js("window.studioIris&&studioIris("+eyeActive+")")
    if(eyeActive)modelAudit+="\n虹膜试验：69 个候选面 · 原模型未覆盖"
-   val presetReport=if(maxPresetPending){maxPresetPending=false;"最高画质 · 原 PBR 安全模式；请逐项测试高级材质"}else null
+   val presetReport=if(maxPresetPending){maxPresetPending=false;"最高画质 · 均衡影视 + 原 PBR；高级材质保持关闭"}else null
    status.text=presetReport?:if(eyeActive)"虹膜反射试验 · "+irisLastResult else if(diagnostic)"仅色彩图诊断 · 已加载" else if(cinematic)"影视渲染 · 纹理绑定完成" else "保真渲染 · 纹理绑定完成"
    js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")
   }else if(android.os.SystemClock.elapsedRealtime()-loadStart>60000L){
@@ -706,7 +706,7 @@ class MainActivity : Activity() {
      if(name=="reference.png")android.webkit.WebResourceResponse("image/png",null,StudioAssets.file(this@MainActivity,name).inputStream())
      else {
       val original=StudioAssets.file(this@MainActivity,"viewer.html").readText()
-      val ui=original.substringBefore("<script").replace("V2.3","V6.7").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
+      val ui=original.substringBefore("<script").replace("V2.3","V6.8").replace("前台每30秒检查资源；回退后暂停，手动同步可恢复。不更新 APP 程序。","自动检测版本，确认后才下载更新。").replace("检查并同步","检查更新")
       val script=assets.open("studio-controls.js").bufferedReader().use{it.readText()}
       val html=ui+"<style>html,body,canvas{background:transparent!important}body.compare canvas{margin-left:43%;width:57%}</style><script>"+script+"</script></body></html>"
       android.webkit.WebResourceResponse("text/html","UTF-8",java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
@@ -724,6 +724,7 @@ class MainActivity : Activity() {
      initialized=true
      pausedResources=prefs.getBoolean("paused",false)
      cinematic=prefs.getBoolean("cinematic",true)
+     lightProfile=prefs.getInt("lightProfile",4).coerceIn(0,5)
      refineAtlas=prefs.getBoolean("refineAtlas",true)
      skinSoftness=prefs.getFloat("skinSoftness",.55f)
      poreStrength=prefs.getFloat("poreStrength",.35f).coerceIn(0f,1f)
@@ -786,7 +787,7 @@ class MainActivity : Activity() {
     try{
      val j=JSONObject(data)
      when(command){
-      "ready"->{js("window.studioIris&&studioIris("+(eyeActive&&!loading)+");window.studioIrisStrength&&studioIrisStrength("+irisStrength+")");js("window.studioPores&&studioPores("+poreStrength+")");js("window.studioSkin&&studioSkin("+skinSoftness+")");js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")}
+      "ready"->{js("window.studioLightProfile&&studioLightProfile("+lightProfile+")");js("window.studioIris&&studioIris("+(eyeActive&&!loading)+");window.studioIrisStrength&&studioIrisStrength("+irisStrength+")");js("window.studioPores&&studioPores("+poreStrength+")");js("window.studioSkin&&studioSkin("+skinSoftness+")");js("window.studioRefine&&studioRefine("+refineAtlas+")");js("window.studioLook&&studioLook("+cinematic+")");js("studioStatus("+JSONObject.quote(status.text.toString())+");studioModel("+JSONObject.quote(selected)+")");if(loading)js("window.studioProgress&&studioProgress("+lastLoadPercent.coerceAtLeast(0)+")") else if(viewer.asset!=null)js("studioLoaded("+JSONObject.quote(selected)+");window.studioDiagnostic&&studioDiagnostic("+diagnostic+");window.studioRegions&&studioRegions("+regionModel+");window.studioSSS&&studioSSS("+(sssInstance!=null)+");window.studioHair&&studioHair("+(hairInstance!=null)+");window.studioCloth&&studioCloth("+(clothInstance!=null)+");window.studioShell&&studioShell("+(shellInstance!=null)+")")}
       "pose"->{yaw=j.optDouble("yaw",0.0).toFloat();pitch=j.optDouble("pitch",0.0).toFloat().coerceIn(-85f,85f);zoom=j.optDouble("zoom",1.0).toFloat().coerceIn(.3f,2.5f);panX=j.optDouble("x",0.0).toFloat().coerceIn(-1.5f,1.5f);panY=j.optDouble("y",0.0).toFloat().coerceIn(-1.5f,1.5f);spinning=j.optBoolean("spin",false);applyTransform()}
       "model"->{val m=j.optString("mode");if(m in listOf("full","mobile")&&(m!=selected||viewer.asset==null)){diagnostic=false;selected=m;prefs.edit().putString("model",m).apply();loadMode(m)}}
       "diagnose"->{
@@ -979,7 +980,9 @@ class MainActivity : Activity() {
  private fun chooseLightProfile(){
   val labels=arrayOf("标准 · 原始主光与 IBL","柔和棚拍 · 独立正面补光","轮廓造型 · 独立背侧轮廓光","角色肖像 · 原始肖像主光","均衡影视 · 肖像主光与独立补光及轮廓","轮廓增强 · 肖像主光与增强背光")
   android.app.AlertDialog.Builder(this).setTitle("灯光校准").setSingleChoiceItems(labels,lightProfile){dialog,i->
+   if(loading||exportBusy||eyePreparing){dialog.dismiss();return@setSingleChoiceItems}
    lightProfile=i;dialog.dismiss()
+   prefs.edit().putInt("lightProfile",i).apply()
    lighting(exp,if(flat)0f else keyPower,if(flat)2f else ambientPower)
    status.text=labels[i]
    js("window.studioLightProfile&&studioLightProfile("+i+")")
@@ -1125,10 +1128,10 @@ class MainActivity : Activity() {
    "旧皮肤 Subsurface 已移除，替换为保真 lit PBR；四套候选材质仍须逐项真机验证。虹膜候选面仅 69 个，眼球尚未独立重建。\n"+
    "标准 PNG 共用实时光影配置；离屏抗锯齿与超大尺寸 AO 仍有区别。\n"+
    "16-bit PNG 使用独立线性浮点回读及色调映射，实际精度依赖 GPU。\n\n"+modelAudit
-  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V6.7").setMessage(report)
+  android.app.AlertDialog.Builder(this).setTitle("渲染诊断 · V6.8").setMessage(report)
    .setNegativeButton("关闭",null).setPositiveButton("复制报告"){_,_->
     val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V6.7",report))
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("Starling V6.8",report))
     Toast.makeText(this,"诊断报告已复制",Toast.LENGTH_SHORT).show()
    }.show()
  }
@@ -1136,12 +1139,12 @@ class MainActivity : Activity() {
   if(exportBusy||loading){Toast.makeText(this,"请先完成当前操作",Toast.LENGTH_SHORT).show();return}
   val reload=!regionModel||selected!="full"||!cinematic||!refineAtlas||diagnostic
   cinematic=true;refineAtlas=true;diagnostic=false;selected="full";qualityLevel=2.0;flat=false
-  exp=1.04f;keyPower=1f;ambientPower=1f;lightProfile=0
-  prefs.edit().putBoolean("cinematic",true).putBoolean("refineAtlas",true).putString("model","full").apply()
+  exp=1.04f;keyPower=1f;ambientPower=1f;lightProfile=4
+  prefs.edit().putBoolean("cinematic",true).putBoolean("refineAtlas",true).putString("model","full").putInt("lightProfile",4).apply()
   js("window.studioMaximum&&studioMaximum()")
   applyStudioLook()
   if(reload){maxPresetPending=true;loadMode("full")}
-  else{restoreSafeMaterials();status.text="最高画质 · 原 PBR 安全模式；请逐项测试高级材质"}
+  else{restoreSafeMaterials();status.text="最高画质 · 均衡影视 + 原 PBR；高级材质保持关闭"}
  }
  private fun chooseExport(){
   if(exportBusy||loading||viewer.asset==null||diagnostic){Toast.makeText(this,"请先完成正常模型加载",Toast.LENGTH_SHORT).show();return}
@@ -1880,8 +1883,8 @@ const poreWrap=document.createElement('label');poreWrap.style.display='block';po
 const poreValue=document.createElement('span');poreValue.textContent='0.35';poreWrap.appendChild(poreValue);
 const poreRange=document.createElement('input');poreRange.type='range';poreRange.id='studioPoresRange';poreRange.min='0';poreRange.max='1';poreRange.step='.01';poreRange.value='.35';poreRange.disabled=true;poreRange.style.width='100%';poreWrap.appendChild(poreRange);sssButton.insertAdjacentElement('afterend',poreWrap);
 window.studioPores=v=>{poreRange.value=v;poreValue.textContent=Number(v).toFixed(2)};poreRange.oninput=()=>{const v=Number(poreRange.value);studioPores(v);send('pores',{value:v})};
-const maxButton=document.createElement('button');maxButton.textContent='最高画质 · 安全 PBR';maxButton.style.margin='4px';maxButton.onclick=()=>send('maximum');$('check').insertAdjacentElement('afterend',maxButton);
-window.studioMaximum=()=>{if(window.studioLightProfile)studioLightProfile(0);studioLook(true);studioRefine(true);studioModel('full');$('quality').value='2';studioDefaults();send('quality',{value:2})};
+const maxButton=document.createElement('button');maxButton.textContent='最高画质 · 均衡影视';maxButton.style.margin='4px';maxButton.onclick=()=>send('maximum');$('check').insertAdjacentElement('afterend',maxButton);
+window.studioMaximum=()=>{if(window.studioLightProfile)studioLightProfile(4);studioLook(true);studioRefine(true);studioModel('full');$('quality').value='2';studioDefaults();send('quality',{value:2})};
 const irisButton=document.createElement('button');irisButton.textContent='虹膜反射 · 试验关闭';irisButton.style.margin='4px';irisButton.onclick=()=>send('irisTest');$('check').insertAdjacentElement('afterend',irisButton);
 const irisStrengthButton=document.createElement('button');irisStrengthButton.textContent='虹膜 A/B 对照';irisStrengthButton.style.margin='4px';irisStrengthButton.disabled=true;irisStrengthButton.onclick=()=>send('irisStrength');irisButton.insertAdjacentElement('afterend',irisStrengthButton);
 window.studioIris=on=>{irisButton.textContent='虹膜反射 · '+(on?'试验开启':'试验关闭');irisStrengthButton.disabled=!on};
@@ -1890,7 +1893,7 @@ const irisEvidenceButton=document.createElement('button');irisEvidenceButton.tex
 window.studioIrisStrength=t=>{irisStrengthButton.textContent='虹膜 A/B · '+Math.round(t*100)+'%'};
 const portraitButton=document.createElement('button');portraitButton.textContent='肖像精修 · 单项对照';portraitButton.style.margin='4px';portraitButton.onclick=()=>send('portrait');$('check').insertAdjacentElement('afterend',portraitButton);
 const lightEvidenceButton=document.createElement('button');lightEvidenceButton.textContent='导出六档布光对照';lightEvidenceButton.style.margin='4px';lightEvidenceButton.onclick=()=>send('lightEvidence');$('check').insertAdjacentElement('afterend',lightEvidenceButton);
-const lightingButton=document.createElement('button');lightingButton.textContent='灯光校准 · 标准主光';lightingButton.style.margin='4px';lightingButton.onclick=()=>send('lightProfile');$('check').insertAdjacentElement('afterend',lightingButton);
+const lightingButton=document.createElement('button');lightingButton.textContent='灯光校准 · 均衡影视';lightingButton.style.margin='4px';lightingButton.onclick=()=>send('lightProfile');$('check').insertAdjacentElement('afterend',lightingButton);
 window.studioLightProfile=i=>{lightingButton.textContent='灯光校准 · '+['标准主光','柔和棚拍','轮廓造型','角色肖像','均衡影视','轮廓增强'][i]};
 const safeButton=document.createElement('button');safeButton.textContent='恢复原始 PBR 材质';safeButton.style.margin='4px';safeButton.onclick=()=>send('safeMaterials');$('check').insertAdjacentElement('afterend',safeButton);
 const compareMaterials=document.createElement('button');compareMaterials.textContent='高级材质 / PBR 对照';compareMaterials.style.margin='4px';compareMaterials.onclick=()=>send('materialCompare');$('check').insertAdjacentElement('afterend',compareMaterials);
